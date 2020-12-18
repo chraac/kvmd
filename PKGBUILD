@@ -28,7 +28,7 @@ for _variant in "${_variants[@]}"; do
 	pkgname+=(kvmd-platform-$_platform-$_board)
 done
 pkgbase=kvmd
-pkgver=2.6
+pkgver=2.8
 pkgrel=1
 pkgdesc="The main Pi-KVM daemon"
 url="https://github.com/pikvm/kvmd"
@@ -139,7 +139,7 @@ for _variant in "${_variants[@]}"; do
 		cd \"kvmd-\$pkgver\"
 
 		pkgdesc=\"Pi-KVM platform configs - $_platform for $_board\"
-		depends=(kvmd=$pkgver-$pkgrel)
+		depends=(kvmd=$pkgver-$pkgrel \"raspberrypi-bootloader>=20201214-3\" \"raspberrypi-bootloader-x>=20201214-3\" \"raspberrypi-firmware>=20201214-3\")
 
 		if [[ $_platform =~ ^.*-hdmi$ ]]; then
 			depends=(\"\${depends[@]}\")
