@@ -1,8 +1,8 @@
 /*****************************************************************************
 #                                                                            #
-#    KVMD - The main Pi-KVM daemon.                                          #
+#    KVMD - The main PiKVM daemon.                                           #
 #                                                                            #
-#    Copyright (C) 2018  Maxim Devaev <mdevaev@gmail.com>                    #
+#    Copyright (C) 2018-2023  Maxim Devaev <mdevaev@gmail.com>               #
 #                                                                            #
 #    This program is free software: you can redistribute it and/or modify    #
 #    it under the terms of the GNU General Public License as published by    #
@@ -41,14 +41,14 @@ export function Recorder() {
 	var __last_event_ts = 0;
 
 	var __init__ = function() {
-		tools.setOnClick($("hid-recorder-record"), __startRecord);
-		tools.setOnClick($("hid-recorder-stop"), __stopProcess);
-		tools.setOnClick($("hid-recorder-play"), __playRecord);
-		tools.setOnClick($("hid-recorder-clear"), __clearRecord);
+		tools.el.setOnClick($("hid-recorder-record"), __startRecord);
+		tools.el.setOnClick($("hid-recorder-stop"), __stopProcess);
+		tools.el.setOnClick($("hid-recorder-play"), __playRecord);
+		tools.el.setOnClick($("hid-recorder-clear"), __clearRecord);
 
 		$("hid-recorder-new-script-file").onchange = __uploadScript;
-		tools.setOnClick($("hid-recorder-upload"), () => $("hid-recorder-new-script-file").click());
-		tools.setOnClick($("hid-recorder-download"), __downloadScript);
+		tools.el.setOnClick($("hid-recorder-upload"), () => $("hid-recorder-new-script-file").click());
+		tools.el.setOnClick($("hid-recorder-download"), __downloadScript);
 	};
 
 	/************************************************************************/
@@ -69,6 +69,18 @@ export function Recorder() {
 
 	self.recordPrintEvent = function(text) {
 		__recordEvent({"event_type": "print", "event": {"text": text}});
+	};
+
+	self.recordAtxButtonEvent = function(button) {
+		__recordEvent({"event_type": "atx_button", "event": {"button": button}});
+	};
+
+	self.recordGpioSwitchEvent = function(channel, to) {
+		__recordEvent({"event_type": "gpio_switch", "event": {"channel": channel, "state": to}});
+	};
+
+	self.recordGpioPulseEvent = function(channel) {
+		__recordEvent({"event_type": "gpio_pulse", "event": {"channel": channel}});
 	};
 
 	var __recordEvent = function(event) {
@@ -142,29 +154,59 @@ export function Recorder() {
 						__checkType(event.event, "object", "Non-dict event");
 
 						if (event.event_type === "delay") {
-							__checkInt(event.event.millis, "Non-integer delay");
-							if (event.event.millis < 0) {
-								throw "Negative delay";
-							}
+							__checkUnsigned(event.event.millis, "Non-unsigned delay");
 							events_time += event.event.millis;
+
 						} else if (event.event_type === "print") {
 							__checkType(event.event.text, "string", "Non-string print text");
+
 						} else if (event.event_type === "key") {
 							__checkType(event.event.key, "string", "Non-string key code");
 							__checkType(event.event.state, "boolean", "Non-bool key state");
+
 						} else if (event.event_type === "mouse_button") {
 							__checkType(event.event.button, "string", "Non-string mouse button code");
 							__checkType(event.event.state, "boolean", "Non-bool mouse button state");
+
 						} else if (event.event_type === "mouse_move") {
 							__checkType(event.event.to, "object", "Non-object mouse move target");
 							__checkInt(event.event.to.x, "Non-int mouse move X");
 							__checkInt(event.event.to.y, "Non-int mouse move Y");
+
+						} else if (event.event_type === "mouse_relative") {
+							__checkMouseRelativeDelta(event.event.delta);
+							__checkType(event.event.squash, "boolean", "Non-boolean squash");
+
 						} else if (event.event_type === "mouse_wheel") {
 							__checkType(event.event.delta, "object", "Non-object mouse wheel delta");
 							__checkInt(event.event.delta.x, "Non-int mouse delta X");
 							__checkInt(event.event.delta.y, "Non-int mouse delta Y");
+
+						} else if (event.event_type === "atx_button") {
+							__checkType(event.event.button, "string", "Non-string ATX button");
+
+						} else if (event.event_type === "gpio_switch") {
+							__checkType(event.event.channel, "string", "Non-string GPIO channel");
+							__checkType(event.event.state, "boolean", "Non-bool GPIO state");
+
+						} else if (event.event_type === "gpio_pulse") {
+							__checkType(event.event.channel, "string", "Non-string GPIO channel");
+
+						} else if (event.event_type === "delay_random") {
+							__checkType(event.event.range, "object", "Non-object random delay range");
+							__checkUnsigned(event.event.range.min, "Non-unsigned random delay range min");
+							__checkUnsigned(event.event.range.max, "Non-unsigned random delay range max");
+							__checkRangeMinMax(event.event.range, "Invalid random delay range");
+							events_time += event.event.range.max;
+
+						} else if (event.event_type === "mouse_move_random") { // Hack for pikvm/pikvm#1041
+							__checkType(event.event.range, "object", "Non-object random mouse move range");
+							__checkInt(event.event.range.min, "Non-int random mouse move range min");
+							__checkInt(event.event.range.max, "Non-int random mouse move range max");
+							__checkRangeMinMax(event.event.range, "Invalid random mouse move range");
+
 						} else {
-							throw "Unknown event type";
+							throw `Unknown event type: ${event.event_type}`;
 						}
 
 						events.push(event);
@@ -195,13 +237,48 @@ export function Recorder() {
 		}
 	};
 
+	var __checkUnsigned = function(obj, msg) {
+		__checkInt(obj, msg);
+		if (obj < 0) {
+			throw msg;
+		}
+	};
+
+	var __checkRangeMinMax = function(obj, msg) {
+		if (obj.min > obj.max) {
+			throw msg;
+		}
+	};
+
+	var __checkArray = function (obj, msg) {
+		if (!Array.isArray(obj)) {
+			throw msg;
+		}
+	};
+
+	var __checkMouseRelativeDelta = function(delta) {
+		__checkArray(delta, "Non-array relative mouse delta");
+		delta.forEach(element => {
+			__checkType(element, "object", "Non-object relative mouse delta element");
+			__checkInt(element.x, "Non-int mouse delta X");
+			__checkInt(element.y, "Non-int mouse delta Y");
+		});
+	};
+
 	var __runEvents = function(index, time=0) {
 		while (index < __events.length) {
 			__setCounters(__events.length - index + 1, __events_time - time);
 			let event = __events[index];
-			if (event.event_type === "delay") {
-				__play_timer = setTimeout(() => __runEvents(index + 1, time + event.event.millis), event.event.millis);
+
+			if (["delay", "delay_random"].includes(event.event_type)) {
+				let millis = (
+					event.event_type === "delay"
+						? event.event.millis
+						: tools.getRandomInt(event.event.range.min, event.event.range.max)
+				);
+				__play_timer = setTimeout(() => __runEvents(index + 1, time + millis), millis);
 				return;
+
 			} else if (event.event_type === "print") {
 				let http = tools.makeRequest("POST", "/api/hid/print?limit=0", function() {
 					if (http.readyState === 4) {
@@ -217,12 +294,55 @@ export function Recorder() {
 					}
 				}, event.event.text, "text/plain");
 				return;
-			} else if (["key", "mouse_button", "mouse_move", "mouse_wheel"].includes(event.event_type)) {
-				__ws.send(JSON.stringify(event));
+
+			} else if (event.event_type === "atx_button") {
+				let http = tools.makeRequest("POST", `/api/atx/click?button=${event.event.button}`, function() {
+					if (http.readyState === 4) {
+						if (http.status !== 200) {
+							wm.error("ATX error:<br>", http.responseText);
+							__stopProcess();
+						} else if (http.status === 200) {
+							__play_timer = setTimeout(() => __runEvents(index + 1, time), 0);
+						}
+					}
+				});
+				return;
+
+			} else if (["gpio_switch", "gpio_pulse"].includes(event.event_type)) {
+				let path = "/api/gpio";
+				if (event.event_type === "gpio_switch") {
+					path += `/switch?channel=${event.event.channel}&state=${event.event.to}`;
+				} else { // gpio_pulse
+					path += `/pulse?channel=${event.event.channel}`;
+				}
+				let http = tools.makeRequest("POST", path, function() {
+					if (http.readyState === 4) {
+						if (http.status !== 200) {
+							wm.error("GPIO error:<br>", http.responseText);
+							__stopProcess();
+						} else if (http.status === 200) {
+							__play_timer = setTimeout(() => __runEvents(index + 1, time), 0);
+						}
+					}
+				});
+				return;
+
+			} else if (["key", "mouse_button", "mouse_move", "mouse_wheel", "mouse_relative"].includes(event.event_type)) {
+				__ws.sendHidEvent(event);
+
+			} else if (event.event_type === "mouse_move_random") {
+				__ws.sendHidEvent({
+					"event_type": "mouse_move",
+					"event": {"to": {
+						"x": tools.getRandomInt(event.event.range.min, event.event.range.max),
+						"y": tools.getRandomInt(event.event.range.min, event.event.range.max),
+					}},
+				});
 			}
+
 			index += 1;
 		}
-		if ($("hid-recorder-loop-checkbox").checked) {
+		if ($("hid-recorder-loop-switch").checked) {
 			setTimeout(() => __runEvents(0));
 		} else {
 			__stopProcess();
@@ -241,14 +361,14 @@ export function Recorder() {
 			$("hid-recorder-led").title = "";
 		}
 
-		wm.switchEnabled($("hid-recorder-record"), (__ws && !__play_timer && !__recording));
-		wm.switchEnabled($("hid-recorder-stop"), (__ws && (__play_timer || __recording)));
-		wm.switchEnabled($("hid-recorder-play"), (__ws && !__recording && __events.length));
-		wm.switchEnabled($("hid-recorder-clear"), (!__play_timer && !__recording && __events.length));
-		wm.switchEnabled($("hid-recorder-loop-checkbox"), (__ws && !__recording));
+		tools.el.setEnabled($("hid-recorder-record"), (__ws && !__play_timer && !__recording));
+		tools.el.setEnabled($("hid-recorder-stop"), (__ws && (__play_timer || __recording)));
+		tools.el.setEnabled($("hid-recorder-play"), (__ws && !__recording && __events.length));
+		tools.el.setEnabled($("hid-recorder-clear"), (!__play_timer && !__recording && __events.length));
+		tools.el.setEnabled($("hid-recorder-loop-switch"), (__ws && !__recording));
 
-		wm.switchEnabled($("hid-recorder-upload"), (!__play_timer && !__recording));
-		wm.switchEnabled($("hid-recorder-download"), (!__play_timer && !__recording && __events.length));
+		tools.el.setEnabled($("hid-recorder-upload"), (!__play_timer && !__recording));
+		tools.el.setEnabled($("hid-recorder-download"), (!__play_timer && !__recording && __events.length));
 
 		__setCounters(__events.length, __events_time);
 	};

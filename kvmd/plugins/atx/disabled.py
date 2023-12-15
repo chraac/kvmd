@@ -1,8 +1,8 @@
 # ========================================================================== #
 #                                                                            #
-#    KVMD - The main Pi-KVM daemon.                                          #
+#    KVMD - The main PiKVM daemon.                                           #
 #                                                                            #
-#    Copyright (C) 2018  Maxim Devaev <mdevaev@gmail.com>                    #
+#    Copyright (C) 2018-2023  Maxim Devaev <mdevaev@gmail.com>               #
 #                                                                            #
 #    This program is free software: you can redistribute it and/or modify    #
 #    it under the terms of the GNU General Public License as published by    #
@@ -20,7 +20,6 @@
 # ========================================================================== #
 
 
-from typing import Dict
 from typing import AsyncGenerator
 
 from ... import aiotools
@@ -37,7 +36,7 @@ class AtxDisabledError(AtxOperationError):
 
 # =====
 class Plugin(BaseAtx):
-    async def get_state(self) -> Dict:
+    async def get_state(self) -> dict:
         return {
             "enabled": False,
             "busy": False,
@@ -47,7 +46,7 @@ class Plugin(BaseAtx):
             },
         }
 
-    async def poll_state(self) -> AsyncGenerator[Dict, None]:
+    async def poll_state(self) -> AsyncGenerator[dict, None]:
         while True:
             yield (await self.get_state())
             await aiotools.wait_infinite()

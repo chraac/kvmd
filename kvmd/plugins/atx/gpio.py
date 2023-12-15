@@ -1,8 +1,8 @@
 # ========================================================================== #
 #                                                                            #
-#    KVMD - The main Pi-KVM daemon.                                          #
+#    KVMD - The main PiKVM daemon.                                           #
 #                                                                            #
-#    Copyright (C) 2018  Maxim Devaev <mdevaev@gmail.com>                    #
+#    Copyright (C) 2018-2023  Maxim Devaev <mdevaev@gmail.com>               #
 #                                                                            #
 #    This program is free software: you can redistribute it and/or modify    #
 #    it under the terms of the GNU General Public License as published by    #
@@ -20,15 +20,12 @@
 # ========================================================================== #
 
 
-from typing import Dict
 from typing import AsyncGenerator
-from typing import Optional
 
 import gpiod
 
 from ...logging import get_logger
 
-from ... import env
 from ... import aiotools
 from ... import aiogp
 
@@ -37,6 +34,7 @@ from ...yamlconf import Option
 from ...validators.basic import valid_bool
 from ...validators.basic import valid_float_f0
 from ...validators.basic import valid_float_f01
+from ...validators.os import valid_abs_path
 from ...validators.hw import valid_gpio_pin
 
 from . import AtxIsBusyError
@@ -47,6 +45,8 @@ from . import BaseAtx
 class Plugin(BaseAtx):  # pylint: disable=too-many-instance-attributes
     def __init__(  # pylint: disable=too-many-arguments,super-init-not-called
         self,
+        device_path: str,
+
         power_led_pin: int,
         power_led_inverted: bool,
         power_led_debounce: float,
@@ -61,6 +61,8 @@ class Plugin(BaseAtx):  # pylint: disable=too-many-instance-attributes
         long_click_delay: float,
     ) -> None:
 
+        self.__device_path = device_path
+
         self.__power_led_pin = power_led_pin
         self.__hdd_led_pin = hdd_led_pin
         self.__power_switch_pin = power_switch_pin
@@ -72,12 +74,12 @@ class Plugin(BaseAtx):  # pylint: disable=too-many-instance-attributes
         self.__notifier = aiotools.AioNotifier()
         self.__region = aiotools.AioExclusiveRegion(AtxIsBusyError, self.__notifier)
 
-        self.__chip: Optional[gpiod.Chip] = None
-        self.__power_switch_line: Optional[gpiod.Line] = None
-        self.__reset_switch_line: Optional[gpiod.Line] = None
+        self.__chip: (gpiod.Chip | None) = None
+        self.__power_switch_line: (gpiod.Line | None) = None
+        self.__reset_switch_line: (gpiod.Line | None) = None
 
         self.__reader = aiogp.AioReader(
-            path=env.GPIO_DEVICE_PATH,
+            path=self.__device_path,
             consumer="kvmd::atx::leds",
             pins={
                 power_led_pin: aiogp.AioReaderPinParams(power_led_inverted, power_led_debounce),
@@ -87,18 +89,20 @@ class Plugin(BaseAtx):  # pylint: disable=too-many-instance-attributes
         )
 
     @classmethod
-    def get_plugin_options(cls) -> Dict:
+    def get_plugin_options(cls) -> dict:
         return {
-            "power_led_pin":      Option(-1,    type=valid_gpio_pin),
+            "device": Option("/dev/gpiochip0", type=valid_abs_path, unpack_as="device_path"),
+
+            "power_led_pin":      Option(24,    type=valid_gpio_pin),
             "power_led_inverted": Option(False, type=valid_bool),
             "power_led_debounce": Option(0.1,   type=valid_float_f0),
 
-            "hdd_led_pin":      Option(-1,    type=valid_gpio_pin),
+            "hdd_led_pin":      Option(22,    type=valid_gpio_pin),
             "hdd_led_inverted": Option(False, type=valid_bool),
             "hdd_led_debounce": Option(0.1,   type=valid_float_f0),
 
-            "power_switch_pin": Option(-1,  type=valid_gpio_pin),
-            "reset_switch_pin": Option(-1,  type=valid_gpio_pin),
+            "power_switch_pin": Option(23,  type=valid_gpio_pin),
+            "reset_switch_pin": Option(27,  type=valid_gpio_pin),
             "click_delay":      Option(0.1, type=valid_float_f01),
             "long_click_delay": Option(5.5, type=valid_float_f01),
         }
@@ -108,7 +112,7 @@ class Plugin(BaseAtx):  # pylint: disable=too-many-instance-attributes
         assert self.__power_switch_line is None
         assert self.__reset_switch_line is None
 
-        self.__chip = gpiod.Chip(env.GPIO_DEVICE_PATH)
+        self.__chip = gpiod.Chip(self.__device_path)
 
         self.__power_switch_line = self.__chip.get_line(self.__power_switch_pin)
         self.__power_switch_line.request("kvmd::atx::power_switch", gpiod.LINE_REQ_DIR_OUT, default_vals=[0])
@@ -116,7 +120,7 @@ class Plugin(BaseAtx):  # pylint: disable=too-many-instance-attributes
         self.__reset_switch_line = self.__chip.get_line(self.__reset_switch_pin)
         self.__reset_switch_line.request("kvmd::atx::reset_switch", gpiod.LINE_REQ_DIR_OUT, default_vals=[0])
 
-    async def get_state(self) -> Dict:
+    async def get_state(self) -> dict:
         return {
             "enabled": True,
             "busy": self.__region.is_busy(),
@@ -126,8 +130,8 @@ class Plugin(BaseAtx):  # pylint: disable=too-many-instance-attributes
             },
         }
 
-    async def poll_state(self) -> AsyncGenerator[Dict, None]:
-        prev_state: Dict = {}
+    async def poll_state(self) -> AsyncGenerator[dict, None]:
+        prev_state: dict = {}
         while True:
             state = await self.get_state()
             if state != prev_state:
@@ -179,7 +183,7 @@ class Plugin(BaseAtx):  # pylint: disable=too-many-instance-attributes
     async def __get_power(self) -> bool:
         return (await self.get_state())["leds"]["power"]
 
-    @aiotools.atomic
+    @aiotools.atomic_fg
     async def __click(self, name: str, line: gpiod.Line, delay: float, wait: bool) -> None:
         if wait:
             async with self.__region:
@@ -190,7 +194,7 @@ class Plugin(BaseAtx):  # pylint: disable=too-many-instance-attributes
                 self.__region, self.__inner_click, name, line, delay,
             )
 
-    @aiotools.atomic
+    @aiotools.atomic_fg
     async def __inner_click(self, name: str, line: gpiod.Line, delay: float) -> None:
         await aiogp.pulse(line, delay, 1)
         get_logger(0).info("Clicked ATX button %r", name)

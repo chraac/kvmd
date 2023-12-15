@@ -1,8 +1,8 @@
 # ========================================================================== #
 #                                                                            #
-#    KVMD - The main Pi-KVM daemon.                                          #
+#    KVMD - The main PiKVM daemon.                                           #
 #                                                                            #
-#    Copyright (C) 2018  Maxim Devaev <mdevaev@gmail.com>                    #
+#    Copyright (C) 2018-2023  Maxim Devaev <mdevaev@gmail.com>               #
 #                                                                            #
 #    This program is free software: you can redistribute it and/or modify    #
 #    it under the terms of the GNU General Public License as published by    #
@@ -23,20 +23,21 @@
 import asyncio
 
 from typing import Any
-from typing import List
+
+import async_lru
 
 from aiohttp.web import Request
 from aiohttp.web import Response
 
 from .... import tools
 
+from ....htserver import exposed_http
+
 from ....plugins.atx import BaseAtx
 from ....plugins.ugpio import UserGpioModes
 
 from ..info import InfoManager
 from ..ugpio import UserGpio
-
-from ..http import exposed_http
 
 
 # =====
@@ -50,27 +51,33 @@ class ExportApi:
 
     @exposed_http("GET", "/export/prometheus/metrics")
     async def __prometheus_metrics_handler(self, _: Request) -> Response:
-        (atx_state, hw_state, gpio_state) = await asyncio.gather(*[
+        return Response(text=(await self.__get_prometheus_metrics()))
+
+    @async_lru.alru_cache(maxsize=1, ttl=5)
+    async def __get_prometheus_metrics(self) -> str:
+        (atx_state, hw_state, fan_state, gpio_state) = await asyncio.gather(*[
             self.__atx.get_state(),
             self.__info_manager.get_submanager("hw").get_state(),
+            self.__info_manager.get_submanager("fan").get_state(),
             self.__user_gpio.get_state(),
         ])
-        rows: List[str] = []
+        rows: list[str] = []
 
-        self.__append_prometheus_rows(rows, atx_state["enabled"], "pikvm_atx_enabled")
-        self.__append_prometheus_rows(rows, atx_state["leds"]["power"], "pikvm_atx_power")
+        self.__append_prometheus_rows(rows, atx_state["enabled"], "pikvm_atx_enabled")  # type: ignore
+        self.__append_prometheus_rows(rows, atx_state["leds"]["power"], "pikvm_atx_power")  # type: ignore
 
         for mode in sorted(UserGpioModes.ALL):
-            for (channel, ch_state) in gpio_state[f"{mode}s"].items():
-                for key in ["online", "state"]:
-                    self.__append_prometheus_rows(rows, ch_state["state"], f"pikvm_gpio_{mode}_{key}_{channel}")
+            for (channel, ch_state) in gpio_state[f"{mode}s"].items():  # type: ignore
+                if not channel.startswith("__"):  # Hide special GPIOs
+                    for key in ["online", "state"]:
+                        self.__append_prometheus_rows(rows, ch_state["state"], f"pikvm_gpio_{mode}_{key}_{channel}")
 
-        if hw_state is not None:
-            self.__append_prometheus_rows(rows, hw_state["health"], "pikvm_hw")
+        self.__append_prometheus_rows(rows, hw_state["health"], "pikvm_hw")  # type: ignore
+        self.__append_prometheus_rows(rows, fan_state, "pikvm_fan")
 
-        return Response(text="\n".join(rows))
+        return "\n".join(rows)
 
-    def __append_prometheus_rows(self, rows: List[str], value: Any, path: str) -> None:
+    def __append_prometheus_rows(self, rows: list[str], value: Any, path: str) -> None:
         if isinstance(value, bool):
             value = int(value)
         if isinstance(value, (int, float)):

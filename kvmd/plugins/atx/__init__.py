@@ -1,8 +1,8 @@
 # ========================================================================== #
 #                                                                            #
-#    KVMD - The main Pi-KVM daemon.                                          #
+#    KVMD - The main PiKVM daemon.                                           #
 #                                                                            #
-#    Copyright (C) 2018  Maxim Devaev <mdevaev@gmail.com>                    #
+#    Copyright (C) 2018-2023  Maxim Devaev <mdevaev@gmail.com>               #
 #                                                                            #
 #    This program is free software: you can redistribute it and/or modify    #
 #    it under the terms of the GNU General Public License as published by    #
@@ -20,9 +20,7 @@
 # ========================================================================== #
 
 
-from typing import Dict
 from typing import AsyncGenerator
-from typing import Type
 
 from ...errors import OperationError
 from ...errors import IsBusyError
@@ -47,10 +45,10 @@ class AtxIsBusyError(IsBusyError, AtxError):
 
 # =====
 class BaseAtx(BasePlugin):
-    async def get_state(self) -> Dict:
+    async def get_state(self) -> dict:
         raise NotImplementedError
 
-    async def poll_state(self) -> AsyncGenerator[Dict, None]:
+    async def poll_state(self) -> AsyncGenerator[dict, None]:
         yield {}
         raise NotImplementedError
 
@@ -84,5 +82,5 @@ class BaseAtx(BasePlugin):
 
 
 # =====
-def get_atx_class(name: str) -> Type[BaseAtx]:
+def get_atx_class(name: str) -> type[BaseAtx]:
     return get_plugin_class("atx", name)  # type: ignore

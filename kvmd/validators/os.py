@@ -1,8 +1,8 @@
 # ========================================================================== #
 #                                                                            #
-#    KVMD - The main Pi-KVM daemon.                                          #
+#    KVMD - The main PiKVM daemon.                                           #
 #                                                                            #
-#    Copyright (C) 2018  Maxim Devaev <mdevaev@gmail.com>                    #
+#    Copyright (C) 2018-2023  Maxim Devaev <mdevaev@gmail.com>               #
 #                                                                            #
 #    This program is free software: you can redistribute it and/or modify    #
 #    it under the terms of the GNU General Public License as published by    #
@@ -23,7 +23,6 @@
 import os
 import stat
 
-from typing import List
 from typing import Any
 
 from . import raise_error
@@ -79,7 +78,12 @@ def valid_printable_filename(arg: Any, name: str="") -> str:
 
     arg = valid_stripped_string_not_empty(arg, name)
 
-    if "/" in arg or "\0" in arg or arg in [".", ".."]:
+    if (
+        "/" in arg
+        or "\0" in arg
+        or arg.startswith(".")
+        or arg == "lost+found"
+    ):
         raise_error(arg, name)
 
     arg = "".join(
@@ -94,13 +98,13 @@ def valid_unix_mode(arg: Any) -> int:
     return int(valid_number(arg, min=0, name="UNIX mode"))
 
 
-def valid_options(arg: Any, name: str="") -> List[str]:
+def valid_options(arg: Any, name: str="") -> list[str]:
     if not name:
         name = "options"
     return valid_string_list(arg, delim=r"[,\t]+", name=name)
 
 
-def valid_command(arg: Any) -> List[str]:
+def valid_command(arg: Any) -> list[str]:
     cmd = valid_options(arg, name="command")
     if len(cmd) == 0:
         raise_error(arg, "command")

@@ -1,8 +1,8 @@
 /*****************************************************************************
 #                                                                            #
-#    KVMD - The main Pi-KVM daemon.                                          #
+#    KVMD - The main PiKVM daemon.                                           #
 #                                                                            #
-#    Copyright (C) 2018  Maxim Devaev <mdevaev@gmail.com>                    #
+#    Copyright (C) 2018-2023  Maxim Devaev <mdevaev@gmail.com>               #
 #                                                                            #
 #    This program is free software: you can redistribute it and/or modify    #
 #    it under the terms of the GNU General Public License as published by    #
@@ -24,21 +24,18 @@ import {tools, $, $$$} from "../tools.js";
 import {Keypad} from "../keypad.js";
 
 
-export function Keyboard(record_callback) {
+export function Keyboard(__recordWsEvent) {
 	var self = this;
 
 	/************************************************************************/
-
-	var __record_callback = record_callback;
 
 	var __ws = null;
 	var __online = true;
 
 	var __keypad = null;
-	var __use_release_hook = false;
 
 	var __init__ = function() {
-		__keypad = new Keypad("div#keyboard-window", __sendKey);
+		__keypad = new Keypad("div#keyboard-window", __sendKey, true);
 
 		$("hid-keyboard-led").title = "Keyboard free";
 
@@ -55,12 +52,7 @@ export function Keyboard(record_callback) {
 		window.addEventListener("focusin", __updateOnlineLeds);
 		window.addEventListener("focusout", __updateOnlineLeds);
 
-		if (tools.browser.is_mac) {
-			// https://bugs.chromium.org/p/chromium/issues/detail?id=28089
-			// https://bugzilla.mozilla.org/show_bug.cgi?id=1299553
-			tools.info("Keyboard: enabled Mac-CMD-Hook");
-			__use_release_hook = true;
-		}
+		tools.storage.bindSimpleSwitch($("hid-keyboard-swap-cc-switch"), "hid.keyboard.swap_cc", false);
 	};
 
 	/************************************************************************/
@@ -95,11 +87,11 @@ export function Keyboard(record_callback) {
 	};
 
 	self.releaseAll = function() {
-		__keypad.releaseAll(__use_release_hook);
+		__keypad.releaseAll();
 	};
 
 	self.emit = function(code, state) {
-		__keyboardHandler({code: code}, state);
+		__keypad.emitByCode(code, state);
 	};
 
 	var __updateOnlineLeds = function() {
@@ -125,7 +117,7 @@ export function Keyboard(record_callback) {
 			}
 		} else {
 			if (is_captured) {
-				title = "Keyboard captured, Pi-KVM offline";
+				title = "Keyboard captured, PiKVM offline";
 			}
 		}
 		$("hid-keyboard-led").className = led;
@@ -133,26 +125,27 @@ export function Keyboard(record_callback) {
 	};
 
 	var __keyboardHandler = function(event, state) {
-		if (event.preventDefault) {
-			event.preventDefault();
-		}
-		if (!event.repeat) {
-			// https://bugs.chromium.org/p/chromium/issues/detail?id=28089
-			// https://bugzilla.mozilla.org/show_bug.cgi?id=1299553
-			__keypad.emit(event.code, state, __use_release_hook);
-		}
+		event.preventDefault();
+		__keypad.emitByKeyEvent(event, state);
 	};
 
 	var __sendKey = function(code, state) {
 		tools.debug("Keyboard: key", (state ? "pressed:" : "released:"), code);
+		if ($("hid-keyboard-swap-cc-switch").checked) {
+			if (code === "ControlLeft") {
+				code = "CapsLock";
+			} else if (code === "CapsLock") {
+				code = "ControlLeft";
+			}
+		}
 		let event = {
 			"event_type": "key",
 			"event": {"key": code, "state": state},
 		};
-		if (__ws) {
-			__ws.send(JSON.stringify(event));
+		if (__ws && !$("hid-mute-switch").checked) {
+			__ws.sendHidEvent(event);
 		}
-		__record_callback(event);
+		__recordWsEvent(event);
 	};
 
 	__init__();

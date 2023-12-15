@@ -1,8 +1,8 @@
 # ========================================================================== #
 #                                                                            #
-#    KVMD - The main Pi-KVM daemon.                                          #
+#    KVMD - The main PiKVM daemon.                                           #
 #                                                                            #
-#    Copyright (C) 2018  Maxim Devaev <mdevaev@gmail.com>                    #
+#    Copyright (C) 2018-2023  Maxim Devaev <mdevaev@gmail.com>               #
 #                                                                            #
 #    This program is free software: you can redistribute it and/or modify    #
 #    it under the terms of the GNU General Public License as published by    #
@@ -22,19 +22,21 @@
 
 import asyncio
 import contextlib
+import functools
 
-from typing import Dict
-from typing import Set
-from typing import Optional
+from typing import Callable
+from typing import Any
 
 import hid
 
 from ...logging import get_logger
 
+from ... import tools
 from ... import aiotools
 
 from ...yamlconf import Option
 
+from ...validators.basic import valid_number
 from ...validators.basic import valid_float_f01
 from ...validators.os import valid_abs_path
 
@@ -62,27 +64,28 @@ class Plugin(BaseUserGpioDriver):
         self.__device_path = device_path
         self.__state_poll = state_poll
 
-        self.__device: Optional[hid.device] = None
+        self.__device: (hid.device | None) = None  # type: ignore
         self.__stop = False
 
-        self.__initials: Dict[int, Optional[bool]] = {}
+        self.__initials: dict[int, (bool | None)] = {}
 
     @classmethod
-    def get_plugin_options(cls) -> Dict:
+    def get_plugin_options(cls) -> dict:
         return {
-            "device":     Option("", type=valid_abs_path, unpack_as="device_path"),
+            "device":     Option("",  type=valid_abs_path, unpack_as="device_path"),
             "state_poll": Option(5.0, type=valid_float_f01),
         }
 
     @classmethod
-    def get_modes(cls) -> Set[str]:
+    def get_modes(cls) -> set[str]:
         return set([UserGpioModes.OUTPUT])
 
-    def register_input(self, pin: int, debounce: float) -> None:
-        raise RuntimeError(f"Unsupported mode 'input' for pin={pin} on {self}")
+    @classmethod
+    def get_pin_validator(cls) -> Callable[[Any], Any]:
+        return functools.partial(valid_number, min=0, max=7, name="HID relay channel")
 
-    def register_output(self, pin: int, initial: Optional[bool]) -> None:
-        self.__initials[pin] = initial
+    def register_output(self, pin: str, initial: (bool | None)) -> None:
+        self.__initials[int(pin)] = initial
 
     def prepare(self) -> None:
         logger = get_logger(0)
@@ -91,8 +94,8 @@ class Plugin(BaseUserGpioDriver):
             with self.__ensure_device("probing"):
                 pass
         except Exception as err:
-            logger.error("Can't probe %s on %s: %s: %s",
-                         self, self.__device_path, type(err).__name__, err)
+            logger.error("Can't probe %s on %s: %s",
+                         self, self.__device_path, tools.efmt(err))
         self.__reset_pins()
 
     async def run(self) -> None:
@@ -103,24 +106,24 @@ class Plugin(BaseUserGpioDriver):
             except Exception:
                 raw = -1
             if raw != prev_raw:
-                await self._notifier.notify()
+                self._notifier.notify()
                 prev_raw = raw
             await asyncio.sleep(self.__state_poll)
 
-    def cleanup(self) -> None:
+    async def cleanup(self) -> None:
         self.__reset_pins()
         self.__close_device()
         self.__stop = True
 
-    def read(self, pin: int) -> bool:
+    async def read(self, pin: str) -> bool:
         try:
-            return self.__inner_read(pin)
+            return self.__inner_read(int(pin))
         except Exception:
             raise GpioDriverOfflineError(self)
 
-    def write(self, pin: int, state: bool) -> None:
+    async def write(self, pin: str, state: bool) -> None:
         try:
-            return self.__inner_write(pin, state)
+            return self.__inner_write(int(pin), state)
         except Exception:
             raise GpioDriverOfflineError(self)
 
@@ -135,37 +138,30 @@ class Plugin(BaseUserGpioDriver):
                 try:
                     self.__inner_write(pin, state)
                 except Exception as err:
-                    logger.error("Can't reset pin=%d of %s on %s: %s: %s",
-                                 pin, self, self.__device_path, type(err).__name__, err)
+                    logger.error("Can't reset pin=%d of %s on %s: %s",
+                                 pin, self, self.__device_path, tools.efmt(err))
 
     def __inner_read(self, pin: int) -> bool:
-        if self.__check_pin(pin):
-            return bool(self.__inner_read_raw() & (1 << pin))
-        return False
+        assert 0 <= pin <= 7
+        return bool(self.__inner_read_raw() & (1 << pin))
 
     def __inner_read_raw(self) -> int:
         with self.__ensure_device("reading") as device:
             return device.get_feature_report(1, 8)[7]
 
     def __inner_write(self, pin: int, state: bool) -> None:
-        if self.__check_pin(pin):
-            with self.__ensure_device("writing") as device:
-                report = [(0xFF if state else 0xFD), pin + 1]  # Pin numeration starts from 0
-                result = device.send_feature_report(report)
-                if result < 0:
-                    raise RuntimeError(f"Retval of send_feature_report() < 0: {result}")
-
-    def __check_pin(self, pin: int) -> bool:
-        ok = (0 <= pin <= 7)
-        if not ok:
-            get_logger(0).warning("Unsupported pin=%d for %s on %s", pin, self, self.__device_path)
-        return ok
+        assert 0 <= pin <= 7
+        with self.__ensure_device("writing") as device:
+            report = [(0xFF if state else 0xFD), pin + 1]  # Pin numeration starts from 0
+            result = device.send_feature_report(report)
+            if result < 0:
+                raise RuntimeError(f"Retval of send_feature_report() < 0: {result}")
 
     @contextlib.contextmanager
-    def __ensure_device(self, context: str) -> hid.device:
+    def __ensure_device(self, context: str) -> hid.device:  # type: ignore
         assert not self.__stop
         if self.__device is None:
-            device = hid.device()
+            device = hid.device()  # type: ignore
             device.open_path(self.__device_path.encode("utf-8"))
             device.set_nonblocking(True)
             self.__device = device
@@ -173,8 +169,8 @@ class Plugin(BaseUserGpioDriver):
         try:
             yield self.__device
         except Exception as err:
-            get_logger(0).error("Error occured on %s on %s while %s: %s: %s",
-                                self, self.__device_path, context, type(err).__name__, err)
+            get_logger(0).error("Error occured on %s on %s while %s: %s",
+                                self, self.__device_path, context, tools.efmt(err))
             self.__close_device()
             raise
 

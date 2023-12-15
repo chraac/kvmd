@@ -1,8 +1,8 @@
 # ========================================================================== #
 #                                                                            #
-#    KVMD - The main Pi-KVM daemon.                                          #
+#    KVMD - The main PiKVM daemon.                                           #
 #                                                                            #
-#    Copyright (C) 2018  Maxim Devaev <mdevaev@gmail.com>                    #
+#    Copyright (C) 2018-2023  Maxim Devaev <mdevaev@gmail.com>               #
 #                                                                            #
 #    This program is free software: you can redistribute it and/or modify    #
 #    it under the terms of the GNU General Public License as published by    #
@@ -23,8 +23,6 @@
 import importlib
 import functools
 
-from typing import Dict
-from typing import Type
 from typing import Any
 
 
@@ -44,12 +42,12 @@ class BasePlugin:
         return name[name.rindex(".") + 1:]
 
     @classmethod
-    def get_plugin_options(cls) -> Dict:
+    def get_plugin_options(cls) -> dict:
         return {}  # pragma: nocover
 
 
 @functools.lru_cache()
-def get_plugin_class(sub: str, name: str) -> Type[BasePlugin]:
+def get_plugin_class(sub: str, name: str) -> type[BasePlugin]:
     assert sub
     assert name
     if name.startswith("_"):

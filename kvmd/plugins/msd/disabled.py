@@ -1,8 +1,8 @@
 # ========================================================================== #
 #                                                                            #
-#    KVMD - The main Pi-KVM daemon.                                          #
+#    KVMD - The main PiKVM daemon.                                           #
 #                                                                            #
-#    Copyright (C) 2018  Maxim Devaev <mdevaev@gmail.com>                    #
+#    Copyright (C) 2018-2023  Maxim Devaev <mdevaev@gmail.com>               #
 #                                                                            #
 #    This program is free software: you can redistribute it and/or modify    #
 #    it under the terms of the GNU General Public License as published by    #
@@ -22,13 +22,13 @@
 
 import contextlib
 
-from typing import Dict
 from typing import AsyncGenerator
-from typing import Optional
 
 from ... import aiotools
 
 from . import MsdOperationError
+from . import BaseMsdReader
+from . import BaseMsdWriter
 from . import BaseMsd
 
 
@@ -40,20 +40,16 @@ class MsdDisabledError(MsdOperationError):
 
 # =====
 class Plugin(BaseMsd):
-    async def get_state(self) -> Dict:
+    async def get_state(self) -> dict:
         return {
             "enabled": False,
             "online": False,
             "busy": False,
             "storage": None,
             "drive": None,
-            "features": {
-                "multi": False,
-                "cdrom": False,
-            },
         }
 
-    async def poll_state(self) -> AsyncGenerator[Dict, None]:
+    async def poll_state(self) -> AsyncGenerator[dict, None]:
         while True:
             yield (await self.get_state())
             await aiotools.wait_infinite()
@@ -63,23 +59,29 @@ class Plugin(BaseMsd):
 
     # =====
 
-    async def set_params(self, name: Optional[str]=None, cdrom: Optional[bool]=None) -> None:
+    async def set_params(
+        self,
+        name: (str | None)=None,
+        cdrom: (bool | None)=None,
+        rw: (bool | None)=None,
+    ) -> None:
+
         raise MsdDisabledError()
 
-    async def connect(self) -> None:
-        raise MsdDisabledError()
-
-    async def disconnect(self) -> None:
+    async def set_connected(self, connected: bool) -> None:
         raise MsdDisabledError()
 
     @contextlib.asynccontextmanager
-    async def write_image(self, name: str) -> AsyncGenerator[None, None]:
+    async def read_image(self, name: str) -> AsyncGenerator[BaseMsdReader, None]:
         if self is not None:  # XXX: Vulture and pylint hack
             raise MsdDisabledError()
-        yield
+        yield BaseMsdReader()
 
-    async def write_image_chunk(self, chunk: bytes) -> int:
-        raise MsdDisabledError()
+    @contextlib.asynccontextmanager
+    async def write_image(self, name: str, size: int, remove_incomplete: (bool | None)) -> AsyncGenerator[BaseMsdWriter, None]:
+        if self is not None:  # XXX: Vulture and pylint hack
+            raise MsdDisabledError()
+        yield BaseMsdWriter()
 
     async def remove(self, name: str) -> None:
         raise MsdDisabledError()

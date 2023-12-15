@@ -1,8 +1,8 @@
 # ========================================================================== #
 #                                                                            #
-#    KVMD - The main Pi-KVM daemon.                                          #
+#    KVMD - The main PiKVM daemon.                                           #
 #                                                                            #
-#    Copyright (C) 2018  Maxim Devaev <mdevaev@gmail.com>                    #
+#    Copyright (C) 2018-2023  Maxim Devaev <mdevaev@gmail.com>               #
 #                                                                            #
 #    This program is free software: you can redistribute it and/or modify    #
 #    it under the terms of the GNU General Public License as published by    #
@@ -20,7 +20,6 @@
 # ========================================================================== #
 
 
-from typing import List
 from typing import Any
 
 import pytest
@@ -72,7 +71,7 @@ def test_fail__valid_user(arg: Any) -> None:
     (", foo, ",      ["foo"]),
     ([],             []),
 ])
-def test_ok__valid_users_list(arg: Any, retval: List) -> None:
+def test_ok__valid_users_list(arg: Any, retval: list) -> None:
     assert valid_users_list(arg) == retval
 
 

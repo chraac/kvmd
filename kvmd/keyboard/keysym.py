@@ -1,6 +1,6 @@
 # ========================================================================== #
 #                                                                            #
-#    KVMD - The main Pi-KVM daemon.                                          #
+#    KVMD - The main PiKVM daemon.                                           #
 #                                                                            #
 #    Copyright (C) 2020  Maxim Devaev <mdevaev@gmail.com>                    #
 #                                                                            #
@@ -22,9 +22,7 @@
 
 import pkgutil
 import functools
-
-from typing import List
-from typing import Dict
+import importlib.machinery
 
 import Xlib.keysymdef
 
@@ -43,15 +41,19 @@ class SymmapModifiers:
     CTRL: int = 0x4
 
 
-def build_symmap(path: str) -> Dict[int, Dict[int, str]]:
+def build_symmap(path: str) -> dict[int, dict[int, str]]:  # x11 keysym -> [(modifiers, webkey), ...]
     # https://github.com/qemu/qemu/blob/95a9457fd44ad97c518858a4e1586a5498f9773c/ui/keymaps.c
     logger = get_logger()
 
-    symmap: Dict[int, Dict[int, str]] = {}
+    symmap: dict[int, dict[int, str]] = {}
     for (src, items) in [
-        ("<builtin>", list(X11_TO_AT1.items())),
         (path, list(_read_keyboard_layout(path).items())),
+        ("<builtin>", list(X11_TO_AT1.items())),
     ]:
+        # Пока лучшая логика - самые первые записи в файле раскладки
+        # должны иметь приоритет над следующими, а дефолтный маппинг
+        # только дополняет отсутствующие значения.
+
         for (code, keys) in items:
             for key in keys:
                 web_name = AT1_TO_WEB.get(key.code)
@@ -64,23 +66,31 @@ def build_symmap(path: str) -> Dict[int, Dict[int, str]]:
                         logger.error("Invalid modifier key at mapping %s: %s / %s", src, web_name, key)
                         continue
 
-                    if code not in symmap:
-                        symmap[code] = {}
-                    symmap[code][
+                    modifiers = (
                         0
                         | (SymmapModifiers.SHIFT if key.shift else 0)
                         | (SymmapModifiers.ALTGR if key.altgr else 0)
                         | (SymmapModifiers.CTRL if key.ctrl else 0)
-                    ] = web_name
+                    )
+                    if code not in symmap:
+                        symmap[code] = {}
+                    symmap[code].setdefault(modifiers, web_name)
     return symmap
 
 
 # =====
 @functools.lru_cache()
-def _get_keysyms() -> Dict[str, int]:
-    keysyms: Dict[str, int] = {}
-    for (loader, module_name, _) in pkgutil.walk_packages(Xlib.keysymdef.__path__):
-        module = loader.find_module(module_name).load_module(module_name)
+def _get_keysyms() -> dict[str, int]:
+    keysyms: dict[str, int] = {
+        "EuroSign": 0x20AC,  # FIXME: https://github.com/python-xlib/python-xlib/pull/264
+    }
+    for (finder, module_name, _) in pkgutil.walk_packages(Xlib.keysymdef.__path__):
+        if not isinstance(finder, importlib.machinery.FileFinder):
+            continue
+        loader = finder.find_module(module_name)
+        if loader is None:
+            continue
+        module = loader.load_module(module_name)
         for keysym_name in dir(module):
             if keysym_name.startswith("XK_"):
                 short_name = keysym_name[3:]
@@ -103,14 +113,14 @@ def _resolve_keysym(name: str) -> int:
     return 0
 
 
-def _read_keyboard_layout(path: str) -> Dict[int, List[At1Key]]:  # Keysym to evdev (at1)
+def _read_keyboard_layout(path: str) -> dict[int, list[At1Key]]:  # Keysym to evdev (at1)
     logger = get_logger(0)
     logger.info("Reading keyboard layout %s ...", path)
 
-    with open(path) as layout_file:
-        lines = list(map(str.strip, layout_file.read().split("\n")))
+    with open(path) as file:
+        lines = list(map(str.strip, file.read().split("\n")))
 
-    layout: Dict[int, List[At1Key]] = {}
+    layout: dict[int, list[At1Key]] = {}
     for (lineno, line) in enumerate(lines):
         if len(line) == 0 or line.startswith(("#", "map ", "include ")):
             continue

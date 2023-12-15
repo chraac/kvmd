@@ -1,8 +1,8 @@
 # ========================================================================== #
 #                                                                            #
-#    KVMD - The main Pi-KVM daemon.                                          #
+#    KVMD - The main PiKVM daemon.                                           #
 #                                                                            #
-#    Copyright (C) 2018  Maxim Devaev <mdevaev@gmail.com>                    #
+#    Copyright (C) 2018-2023  Maxim Devaev <mdevaev@gmail.com>               #
 #                                                                            #
 #    This program is free software: you can redistribute it and/or modify    #
 #    it under the terms of the GNU General Public License as published by    #
@@ -20,8 +20,6 @@
 # ========================================================================== #
 
 
-from typing import Type
-
 from .. import BasePlugin
 from .. import get_plugin_class
 
@@ -36,5 +34,5 @@ class BaseAuthService(BasePlugin):
 
 
 # =====
-def get_auth_service_class(name: str) -> Type[BaseAuthService]:
+def get_auth_service_class(name: str) -> type[BaseAuthService]:
     return get_plugin_class("auth", name)  # type: ignore

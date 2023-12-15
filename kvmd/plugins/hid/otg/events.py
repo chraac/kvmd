@@ -1,8 +1,8 @@
 # ========================================================================== #
 #                                                                            #
-#    KVMD - The main Pi-KVM daemon.                                          #
+#    KVMD - The main PiKVM daemon.                                           #
 #                                                                            #
-#    Copyright (C) 2018  Maxim Devaev <mdevaev@gmail.com>                    #
+#    Copyright (C) 2018-2023  Maxim Devaev <mdevaev@gmail.com>               #
 #                                                                            #
 #    This program is free software: you can redistribute it and/or modify    #
 #    it under the terms of the GNU General Public License as published by    #
@@ -23,13 +23,10 @@
 import struct
 import dataclasses
 
-from typing import List
-from typing import Set
-from typing import Optional
-from typing import Union
-
-from ....keyboard.mappings import OtgKey
+from ....keyboard.mappings import UsbKey
 from ....keyboard.mappings import KEYMAP
+
+from ....mouse import MouseRange
 
 
 # =====
@@ -48,7 +45,7 @@ class ResetEvent(BaseEvent):
 # =====
 @dataclasses.dataclass(frozen=True)
 class KeyEvent(BaseEvent):
-    key: OtgKey
+    key: UsbKey
     state: bool
 
     def __post_init__(self) -> None:
@@ -57,18 +54,18 @@ class KeyEvent(BaseEvent):
 
 @dataclasses.dataclass(frozen=True)
 class ModifierEvent(BaseEvent):
-    modifier: OtgKey
+    modifier: UsbKey
     state: bool
 
     def __post_init__(self) -> None:
         assert self.modifier.is_modifier
 
 
-def make_keyboard_event(key: str, state: bool) -> Union[KeyEvent, ModifierEvent]:
-    otg_key = KEYMAP[key].otg
-    if otg_key.is_modifier:
-        return ModifierEvent(otg_key, state)
-    return KeyEvent(otg_key, state)
+def make_keyboard_event(key: str, state: bool) -> (KeyEvent | ModifierEvent):
+    usb_key = KEYMAP[key].usb
+    if usb_key.is_modifier:
+        return ModifierEvent(usb_key, state)
+    return KeyEvent(usb_key, state)
 
 
 def get_led_caps(flags: int) -> bool:
@@ -85,8 +82,8 @@ def get_led_num(flags: int) -> bool:
 
 
 def make_keyboard_report(
-    pressed_modifiers: Set[OtgKey],
-    pressed_keys: List[Optional[OtgKey]],
+    pressed_modifiers: set[UsbKey],
+    pressed_keys: list[UsbKey | None],
 ) -> bytes:
 
     modifiers = 0
@@ -122,14 +119,23 @@ class MouseButtonEvent(BaseEvent):
 class MouseMoveEvent(BaseEvent):
     to_x: int
     to_y: int
+    win98_fix: bool = False
     to_fixed_x: int = 0
     to_fixed_y: int = 0
 
     def __post_init__(self) -> None:
-        assert -32768 <= self.to_x <= 32767
-        assert -32768 <= self.to_y <= 32767
-        object.__setattr__(self, "to_fixed_x", (self.to_x + 32768) // 2)
-        object.__setattr__(self, "to_fixed_y", (self.to_y + 32768) // 2)
+        assert MouseRange.MIN <= self.to_x <= MouseRange.MAX
+        assert MouseRange.MIN <= self.to_y <= MouseRange.MAX
+        to_fixed_x = MouseRange.remap(self.to_x, 0, MouseRange.MAX)
+        to_fixed_y = MouseRange.remap(self.to_y, 0, MouseRange.MAX)
+        if self.win98_fix:
+            # https://github.com/pikvm/pikvm/issues/159
+            # For some reason, the correct implementation of this fix
+            # is a shift to the left, and not to the right, as in VirtualBox
+            to_fixed_x <<= 1
+            to_fixed_y <<= 1
+        object.__setattr__(self, "to_fixed_x", to_fixed_x)
+        object.__setattr__(self, "to_fixed_y", to_fixed_y)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -157,7 +163,7 @@ def make_mouse_report(
     buttons: int,
     move_x: int,
     move_y: int,
-    wheel_x: Optional[int],
+    wheel_x: (int | None),
     wheel_y: int,
 ) -> bytes:
 

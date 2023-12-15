@@ -1,8 +1,8 @@
 # ========================================================================== #
 #                                                                            #
-#    KVMD - The main Pi-KVM daemon.                                          #
+#    KVMD - The main PiKVM daemon.                                           #
 #                                                                            #
-#    Copyright (C) 2018  Maxim Devaev <mdevaev@gmail.com>                    #
+#    Copyright (C) 2018-2023  Maxim Devaev <mdevaev@gmail.com>               #
 #                                                                            #
 #    This program is free software: you can redistribute it and/or modify    #
 #    it under the terms of the GNU General Public License as published by    #
@@ -26,7 +26,6 @@ import tempfile
 import builtins
 import getpass
 
-from typing import List
 from typing import Generator
 from typing import Any
 
@@ -54,7 +53,7 @@ def _htpasswd_fixture(request) -> Generator[passlib.apache.HtpasswdFile, None, N
     os.remove(path)
 
 
-def _run_htpasswd(cmd: List[str], htpasswd_path: str, internal_type: str="htpasswd") -> None:
+def _run_htpasswd(cmd: list[str], htpasswd_path: str, internal_type: str="htpasswd") -> None:
     cmd = ["kvmd-htpasswd", *cmd, "--set-options"]
     if internal_type != "htpasswd":  # By default
         cmd.append("kvmd/auth/internal/type=" + internal_type)
@@ -158,13 +157,13 @@ def test_fail__not_htpasswd() -> None:
 
 
 def test_fail__unknown_plugin() -> None:
-    with pytest.raises(SystemExit, match="Config error: Unknown plugin 'auth/foobar'"):
+    with pytest.raises(SystemExit, match="ConfigError: Unknown plugin 'auth/foobar'"):
         _run_htpasswd(["list"], "", internal_type="foobar")
 
 
 def test_fail__invalid_passwd(mocker, tmpdir) -> None:  # type: ignore
     path = os.path.abspath(str(tmpdir.join("htpasswd")))
-    open(path, "w").close()
+    open(path, "w").close()  # pylint: disable=consider-using-with
     mocker.patch.object(builtins, "input", (lambda: "\n"))
     with pytest.raises(SystemExit, match="The argument is not a valid passwd characters"):
         _run_htpasswd(["set", "admin", "--read-stdin"], path)

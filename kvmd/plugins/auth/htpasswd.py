@@ -1,8 +1,8 @@
 # ========================================================================== #
 #                                                                            #
-#    KVMD - The main Pi-KVM daemon.                                          #
+#    KVMD - The main PiKVM daemon.                                           #
 #                                                                            #
-#    Copyright (C) 2018  Maxim Devaev <mdevaev@gmail.com>                    #
+#    Copyright (C) 2018-2023  Maxim Devaev <mdevaev@gmail.com>               #
 #                                                                            #
 #    This program is free software: you can redistribute it and/or modify    #
 #    it under the terms of the GNU General Public License as published by    #
@@ -20,8 +20,6 @@
 # ========================================================================== #
 
 
-from typing import Dict
-
 import passlib.apache
 
 from ...yamlconf import Option
@@ -37,7 +35,7 @@ class Plugin(BaseAuthService):
         self.__path = path
 
     @classmethod
-    def get_plugin_options(cls) -> Dict:
+    def get_plugin_options(cls) -> dict:
         return {
             "file": Option("/etc/kvmd/htpasswd", type=valid_abs_file, unpack_as="path"),
         }

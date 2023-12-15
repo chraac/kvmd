@@ -1,8 +1,8 @@
 /*****************************************************************************
 #                                                                            #
-#    KVMD - The main Pi-KVM daemon.                                          #
+#    KVMD - The main PiKVM daemon.                                           #
 #                                                                            #
-#    Copyright (C) 2018  Maxim Devaev <mdevaev@gmail.com>                    #
+#    Copyright (C) 2018-2023  Maxim Devaev <mdevaev@gmail.com>               #
 #                                                                            #
 #    This program is free software: you can redistribute it and/or modify    #
 #    it under the terms of the GNU General Public License as published by    #
@@ -26,7 +26,7 @@
 import {tools, $$$} from "./tools.js";
 
 
-export function Keypad(keys_parent, key_callback) {
+export function Keypad(__keys_parent, __sendKey, __apply_fixes) {
 	var self = this;
 
 	/************************************************************************/
@@ -35,8 +35,23 @@ export function Keypad(keys_parent, key_callback) {
 	var __keys = {};
 	var __modifiers = {};
 
+	var __fix_mac_cmd = false;
+	var __fix_win_altgr = false;
+	var __altgr_ctrl_timer = null;
+
 	var __init__ = function() {
-		for (let el_key of $$$(`${keys_parent} div.key`)) {
+		if (__apply_fixes) {
+			__fix_mac_cmd = tools.browser.is_mac;
+			if (__fix_mac_cmd) {
+				tools.info(`Keymap at ${__keys_parent}: enabled Fix-Mac-CMD`);
+			}
+			__fix_win_altgr = tools.browser.is_win;
+			if (__fix_win_altgr) {
+				tools.info(`Keymap at ${__keys_parent}: enabled Fix-Win-AltGr`);
+			}
+		}
+
+		for (let el_key of $$$(`${__keys_parent} div.key`)) {
 			let code = el_key.getAttribute("data-code");
 
 			tools.setDefault(__keys, code, []);
@@ -45,8 +60,8 @@ export function Keypad(keys_parent, key_callback) {
 			tools.setDefault(__merged, code, []);
 			__merged[code].push(el_key);
 
-			tools.setOnDown(el_key, () => __clickHandler(el_key, true));
-			tools.setOnUp(el_key, () => __clickHandler(el_key, false));
+			tools.el.setOnDown(el_key, () => __clickHandler(el_key, true));
+			tools.el.setOnUp(el_key, () => __clickHandler(el_key, false));
 			el_key.onmouseout = function() {
 				if (__isPressed(el_key)) {
 					__clickHandler(el_key, false);
@@ -54,7 +69,7 @@ export function Keypad(keys_parent, key_callback) {
 			};
 		}
 
-		for (let el_key of $$$(`${keys_parent} div.modifier`)) {
+		for (let el_key of $$$(`${__keys_parent} div.modifier`)) {
 			let code = el_key.getAttribute("data-code");
 
 			tools.setDefault(__modifiers, code, []);
@@ -63,34 +78,91 @@ export function Keypad(keys_parent, key_callback) {
 			tools.setDefault(__merged, code, []);
 			__merged[code].push(el_key);
 
-			tools.setOnDown(el_key, () => __toggleModifierHandler(el_key));
+			tools.el.setOnDown(el_key, () => __toggleModifierHandler(el_key));
 		}
 	};
 
 	/************************************************************************/
 
-	self.releaseAll = function(release_hook=false) {
+	self.releaseAll = function() {
 		for (let dict of [__keys, __modifiers]) {
 			for (let code in dict) {
 				if (__isActive(dict[code][0])) {
-					self.emit(code, false, release_hook);
+					self.emitByCode(code, false);
 				}
 			}
 		}
 	};
 
-	self.emit = function(code, state, release_hook=false) {
+	self.emitByKeyEvent = function(event, state) {
+		if (event.repeat) {
+			return;
+		}
+
+		let code = event.code;
+		if (__apply_fixes) {
+			// https://github.com/pikvm/pikvm/issues/819
+			if (code == "IntlBackslash" && ["`", "~"].includes(event.key)) {
+				code = "Backquote";
+			} else if (code == "Backquote" && ["§", "±"].includes(event.key)) {
+				code = "IntlBackslash";
+			}
+		}
+
+		self.emitByCode(code, state);
+	};
+
+	self.emitByCode = function(code, state, apply_fixes=true) {
 		if (code in __merged) {
-			__commonHandler(__merged[code][0], state, false);
-			if (release_hook) {
-				for (let code in __keys) {
-					if (__isActive(__keys[code][0])) {
-						self.emit(code, false);
-					}
+			if (__fix_win_altgr && apply_fixes) {
+				if (!__fixWinAltgr(code, state)) {
+					return;
 				}
 			}
+			if (__fix_mac_cmd && apply_fixes) {
+				__fixMacCmd(code, state);
+			}
+			__commonHandler(__merged[code][0], state, false);
 			__unholdModifiers();
 		}
+	};
+
+	var __fixMacCmd = function(code, state) {
+		if ((code == "MetaLeft" || code == "MetaRight") && !state) {
+			for (code in __keys) {
+				if (__isActive(__keys[code][0])) {
+					self.emitByCode(code, false, false);
+				}
+			}
+		}
+	};
+
+	var __fixWinAltgr = function(code, state) {
+		// https://github.com/pikvm/pikvm/issues/375
+		// https://github.com/novnc/noVNC/blob/84f102d6/core/input/keyboard.js
+		if (state) {
+			if (__altgr_ctrl_timer) {
+				clearTimeout(__altgr_ctrl_timer);
+				__altgr_ctrl_timer = null;
+				if (code !== "AltRight") {
+					self.emitByCode("ControlLeft", true, false);
+				}
+			}
+			if (code === "ControlLeft" && !__isActive(__modifiers["ControlLeft"][0])) {
+				__altgr_ctrl_timer = setTimeout(function() {
+					__altgr_ctrl_timer = null;
+					self.emitByCode("ControlLeft", true, false);
+				}, 50);
+				return false; // Stop handling
+			}
+		} else {
+			if (__altgr_ctrl_timer) {
+				clearTimeout(__altgr_ctrl_timer);
+				__altgr_ctrl_timer = null;
+				self.emitByCode("ControlLeft", true, false);
+			}
+		}
+		return true; // Continue handling
 	};
 
 	var __clickHandler = function(el_key, state) {
@@ -126,7 +198,7 @@ export function Keypad(keys_parent, key_callback) {
 	var __isPressed = function(el_key) {
 		let is_pressed = false;
 		let el_keys = __resolveKeys(el_key);
-		for (let el_key of el_keys) {
+		for (el_key of el_keys) {
 			is_pressed = (is_pressed || el_key.classList.contains("pressed"));
 		}
 		return is_pressed;
@@ -135,7 +207,7 @@ export function Keypad(keys_parent, key_callback) {
 	var __isHolded = function(el_key) {
 		let is_holded = false;
 		let el_keys = __resolveKeys(el_key);
-		for (let el_key of el_keys) {
+		for (el_key of el_keys) {
 			is_holded = (is_holded || el_key.classList.contains("holded"));
 		}
 		return is_holded;
@@ -144,7 +216,7 @@ export function Keypad(keys_parent, key_callback) {
 	var __isActive = function(el_key) {
 		let is_active = false;
 		let el_keys = __resolveKeys(el_key);
-		for (let el_key of el_keys) {
+		for (el_key of el_keys) {
 			is_active = (is_active || el_key.classList.contains("pressed") || el_key.classList.contains("holded"));
 		}
 		return is_active;
@@ -152,14 +224,14 @@ export function Keypad(keys_parent, key_callback) {
 
 	var __activate = function(el_key, cls) {
 		let el_keys = __resolveKeys(el_key);
-		for (let el_key of el_keys) {
+		for (el_key of el_keys) {
 			el_key.classList.add(cls);
 		}
 	};
 
 	var __deactivate = function(el_key) {
 		let el_keys = __resolveKeys(el_key);
-		for (let el_key of el_keys) {
+		for (el_key of el_keys) {
 			el_key.classList.remove("pressed");
 			el_key.classList.remove("holded");
 		}
@@ -172,7 +244,7 @@ export function Keypad(keys_parent, key_callback) {
 
 	var __process = function(el_key, state) {
 		let code = el_key.getAttribute("data-code");
-		key_callback(code, state);
+		__sendKey(code, state);
 	};
 
 	__init__();

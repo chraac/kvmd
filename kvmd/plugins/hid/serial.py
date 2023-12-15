@@ -1,8 +1,8 @@
 # ========================================================================== #
 #                                                                            #
-#    KVMD - The main Pi-KVM daemon.                                          #
+#    KVMD - The main PiKVM daemon.                                           #
 #                                                                            #
-#    Copyright (C) 2018  Maxim Devaev <mdevaev@gmail.com>                    #
+#    Copyright (C) 2018-2023  Maxim Devaev <mdevaev@gmail.com>               #
 #                                                                            #
 #    This program is free software: you can redistribute it and/or modify    #
 #    it under the terms of the GNU General Public License as published by    #
@@ -23,7 +23,6 @@
 import os
 import contextlib
 
-from typing import Dict
 from typing import Generator
 from typing import Any
 
@@ -81,27 +80,30 @@ class _SerialPhy(BasePhy):
         with serial.Serial(self.__device_path, self.__speed, timeout=self.__read_timeout) as tty:
             yield _SerialPhyConnection(tty)
 
+    def __str__(self) -> str:
+        return f"Serial(path={self.__device_path})"
+
 
 # =====
 class Plugin(BaseMcuHid):
     def __init__(self, **kwargs: Any) -> None:
-        phy_kwargs: Dict = {
+        phy_kwargs: dict = {
             (option.unpack_as or key): kwargs.pop(option.unpack_as or key)
             for (key, option) in self.__get_phy_options().items()
         }
         super().__init__(phy=_SerialPhy(**phy_kwargs), **kwargs)
 
     @classmethod
-    def get_plugin_options(cls) -> Dict:
+    def get_plugin_options(cls) -> dict:
         return {
             **cls.__get_phy_options(),
             **BaseMcuHid.get_plugin_options(),
         }
 
     @classmethod
-    def __get_phy_options(cls) -> Dict:
+    def __get_phy_options(cls) -> dict:
         return {
-            "device":       Option("",     type=valid_abs_path, unpack_as="device_path"),
+            "device":       Option("/dev/kvmd-hid", type=valid_abs_path, unpack_as="device_path"),
             "speed":        Option(115200, type=valid_tty_speed),
             "read_timeout": Option(2.0,    type=valid_float_f01),
         }

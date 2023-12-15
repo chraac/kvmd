@@ -1,8 +1,8 @@
 # ========================================================================== #
 #                                                                            #
-#    KVMD - The main Pi-KVM daemon.                                          #
+#    KVMD - The main PiKVM daemon.                                           #
 #                                                                            #
-#    Copyright (C) 2018  Maxim Devaev <mdevaev@gmail.com>                    #
+#    Copyright (C) 2018-2023  Maxim Devaev <mdevaev@gmail.com>               #
 #                                                                            #
 #    This program is free software: you can redistribute it and/or modify    #
 #    it under the terms of the GNU General Public License as published by    #
@@ -24,9 +24,6 @@ import os
 import asyncio
 import platform
 
-from typing import List
-from typing import Dict
-
 from ....logging import get_logger
 
 from .... import aioproc
@@ -38,10 +35,10 @@ from .base import BaseInfoSubmanager
 
 # =====
 class SystemInfoSubmanager(BaseInfoSubmanager):
-    def __init__(self, streamer_cmd: List[str]) -> None:
+    def __init__(self, streamer_cmd: list[str]) -> None:
         self.__streamer_cmd = streamer_cmd
 
-    async def get_state(self) -> Dict:
+    async def get_state(self) -> dict:
         streamer_info = await self.__get_streamer_info()
         uname_info = platform.uname()  # Uname using the internal cache
         return {
@@ -55,9 +52,9 @@ class SystemInfoSubmanager(BaseInfoSubmanager):
 
     # =====
 
-    async def __get_streamer_info(self) -> Dict:
+    async def __get_streamer_info(self) -> dict:
         version = ""
-        features: Dict[str, bool] = {}
+        features: dict[str, bool] = {}
         try:
             path = self.__streamer_cmd[0]
             ((_, version), (_, features_text)) = await asyncio.gather(

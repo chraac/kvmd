@@ -1,8 +1,8 @@
 # ========================================================================== #
 #                                                                            #
-#    KVMD - The main Pi-KVM daemon.                                          #
+#    KVMD - The main PiKVM daemon.                                           #
 #                                                                            #
-#    Copyright (C) 2018  Maxim Devaev <mdevaev@gmail.com>                    #
+#    Copyright (C) 2018-2023  Maxim Devaev <mdevaev@gmail.com>               #
 #                                                                            #
 #    This program is free software: you can redistribute it and/or modify    #
 #    it under the terms of the GNU General Public License as published by    #
@@ -20,16 +20,13 @@
 # ========================================================================== #
 
 
-from typing import Tuple
-from typing import List
-from typing import Set
 from typing import Iterable
-from typing import Optional
+from typing import Generator
 from typing import Any
 
 from ....logging import get_logger
 
-from ....keyboard.mappings import OtgKey
+from ....keyboard.mappings import UsbKey
 
 from .device import BaseDeviceProcess
 
@@ -55,13 +52,13 @@ class KeyboardProcess(BaseDeviceProcess):
             **kwargs,
         )
 
-        self.__pressed_modifiers: Set[OtgKey] = set()
-        self.__pressed_keys: List[Optional[OtgKey]] = [None] * 6
+        self.__pressed_modifiers: set[UsbKey] = set()
+        self.__pressed_keys: list[UsbKey | None] = [None] * 6
 
     def cleanup(self) -> None:
         self._stop()
         get_logger().info("Clearing HID-keyboard events ...")
-        self._ensure_write(b"\x00" * 8, close=True)  # Release all keys and modifiers
+        self._cleanup_write(b"\x00" * 8)  # Release all keys and modifiers
 
     def send_clear_event(self) -> None:
         self._clear_queue()
@@ -71,7 +68,7 @@ class KeyboardProcess(BaseDeviceProcess):
         self._clear_queue()
         self._queue_event(ResetEvent())
 
-    def send_key_events(self, keys: Iterable[Tuple[str, bool]]) -> None:
+    def send_key_events(self, keys: Iterable[tuple[str, bool]]) -> None:
         for (key, state) in keys:
             self._queue_event(make_keyboard_event(key, state))
 
@@ -87,60 +84,49 @@ class KeyboardProcess(BaseDeviceProcess):
 
     # =====
 
-    def _process_event(self, event: BaseEvent) -> bool:
-        if isinstance(event, ClearEvent):
-            return self.__process_clear_event()
-        elif isinstance(event, ResetEvent):
-            return self.__process_clear_event(reopen=True)
+    def _process_event(self, event: BaseEvent) -> Generator[bytes, None, None]:
+        if isinstance(event, (ClearEvent, ResetEvent)):
+            yield self.__process_clear_event()
         elif isinstance(event, ModifierEvent):
-            return self.__process_modifier_event(event)
+            yield from self.__process_modifier_event(event)
         elif isinstance(event, KeyEvent):
-            return self.__process_key_event(event)
-        raise RuntimeError(f"Not implemented event: {event}")
+            yield from self.__process_key_event(event)
+        else:
+            raise RuntimeError(f"Not implemented event: {event}")
 
-    def __process_clear_event(self, reopen: bool=False) -> bool:
+    def __process_clear_event(self) -> bytes:
         self.__clear_modifiers()
         self.__clear_keys()
-        return self.__send_current_state(reopen=reopen)
+        return self.__make_report()
 
-    def __process_modifier_event(self, event: ModifierEvent) -> bool:
+    def __process_modifier_event(self, event: ModifierEvent) -> Generator[bytes, None, None]:
         if event.modifier in self.__pressed_modifiers:
             # Ранее нажатый модификатор отжимаем
             self.__pressed_modifiers.remove(event.modifier)
-            if not self.__send_current_state():
-                return False
+            yield self.__make_report()
         if event.state:
             # Нажимаем если нужно
             self.__pressed_modifiers.add(event.modifier)
-            return self.__send_current_state()
-        return True
+            yield self.__make_report()
 
-    def __process_key_event(self, event: KeyEvent) -> bool:
+    def __process_key_event(self, event: KeyEvent) -> Generator[bytes, None, None]:
         if event.key in self.__pressed_keys:
             # Ранее нажатую клавишу отжимаем
             self.__pressed_keys[self.__pressed_keys.index(event.key)] = None
-            if not self.__send_current_state():
-                return False
+            yield self.__make_report()
         elif event.state and None not in self.__pressed_keys:
             # Если нужно нажать что-то новое, но свободных слотов нет - отжимаем всё
             self.__clear_keys()
-            if not self.__send_current_state():
-                return False
+            yield self.__make_report()
         if event.state:
             # Нажимаем если нужно
             self.__pressed_keys[self.__pressed_keys.index(None)] = event.key
-            return self.__send_current_state()
-        return True
+            yield self.__make_report()
 
     # =====
 
-    def __send_current_state(self, reopen: bool=False) -> bool:
-        report = make_keyboard_report(self.__pressed_modifiers, self.__pressed_keys)
-        if not self._ensure_write(report, reopen=reopen):
-            self.__clear_modifiers()
-            self.__clear_keys()
-            return False
-        return True
+    def __make_report(self) -> bytes:
+        return make_keyboard_report(self.__pressed_modifiers, self.__pressed_keys)
 
     def __clear_modifiers(self) -> None:
         self.__pressed_modifiers.clear()

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # ========================================================================== #
 #                                                                            #
-#    KVMD - The main Pi-KVM daemon.                                          #
+#    KVMD - The main PiKVM daemon.                                           #
 #                                                                            #
-#    Copyright (C) 2018  Maxim Devaev <mdevaev@gmail.com>                    #
+#    Copyright (C) 2018-2023  Maxim Devaev <mdevaev@gmail.com>               #
 #                                                                            #
 #    This program is free software: you can redistribute it and/or modify    #
 #    it under the terms of the GNU General Public License as published by    #
@@ -26,10 +26,6 @@ import csv
 import textwrap
 import dataclasses
 
-from typing import Set
-from typing import List
-from typing import Optional
-
 import Xlib.keysymdef.latin1
 import Xlib.keysymdef.miscellany
 import Xlib.keysymdef.xf86
@@ -40,9 +36,21 @@ import mako.template
 
 # =====
 @dataclasses.dataclass(frozen=True)
-class _OtgKey:
+class _UsbKey:
     code: int
     is_modifier: bool
+
+    @property
+    def arduino_modifier_code(self) -> int:
+        # https://github.com/NicoHood/HID/blob/4bf6cd6/src/HID-APIs/DefaultKeyboardAPI.hpp#L31
+        assert self.is_modifier
+        code = self.code
+        offset = 0
+        while not (code & 0x1):
+            code >>= 1
+            offset += 1
+            assert offset < 8
+        return ((0xE << 4) | offset)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -62,15 +70,14 @@ class _X11Key:
 class _KeyMapping:
     web_name: str
     mcu_code: int
-    arduino_name: str
-    otg_key: _OtgKey
+    usb_key: _UsbKey
     ps2_key: _Ps2Key
     at1_code: int
-    x11_keys: Set[_X11Key]
+    x11_keys: set[_X11Key]
 
 
 def _resolve_keysym(name: str) -> int:
-    code: Optional[int] = None
+    code: (int | None) = None
     for module in [
         Xlib.keysymdef.latin1,
         Xlib.keysymdef.miscellany,
@@ -84,8 +91,8 @@ def _resolve_keysym(name: str) -> int:
     return code
 
 
-def _parse_x11_names(names: str) -> Set[_X11Key]:
-    keys: Set[_X11Key] = set()
+def _parse_x11_names(names: str) -> set[_X11Key]:
+    keys: set[_X11Key] = set()
     for name in filter(None, names.split(",")):
         shift = name.startswith("^")
         name = (name[1:] if shift else name)
@@ -94,10 +101,10 @@ def _parse_x11_names(names: str) -> Set[_X11Key]:
     return keys
 
 
-def _parse_otg_key(key: str) -> _OtgKey:
+def _parse_usb_key(key: str) -> _UsbKey:
     is_modifier = key.startswith("^")
     code = int((key[1:] if is_modifier else key), 16)
-    return _OtgKey(code, is_modifier)
+    return _UsbKey(code, is_modifier)
 
 
 def _parse_ps2_key(key: str) -> _Ps2Key:
@@ -108,16 +115,15 @@ def _parse_ps2_key(key: str) -> _Ps2Key:
     )
 
 
-def _read_keymap_csv(path: str) -> List[_KeyMapping]:
-    keymap: List[_KeyMapping] = []
-    with open(path) as keymap_file:
-        for row in csv.DictReader(keymap_file):
+def _read_keymap_csv(path: str) -> list[_KeyMapping]:
+    keymap: list[_KeyMapping] = []
+    with open(path) as file:
+        for row in csv.DictReader(file):
             if len(row) >= 6:
                 keymap.append(_KeyMapping(
                     web_name=row["web_name"],
                     mcu_code=int(row["mcu_code"]),
-                    arduino_name=row["arduino_name"],
-                    otg_key=_parse_otg_key(row["otg_key"]),
+                    usb_key=_parse_usb_key(row["usb_key"]),
                     ps2_key=_parse_ps2_key(row["ps2_key"]),
                     at1_code=int(row["at1_code"], 16),
                     x11_keys=_parse_x11_names(row["x11_names"] or ""),
@@ -125,7 +131,7 @@ def _read_keymap_csv(path: str) -> List[_KeyMapping]:
     return keymap
 
 
-def _render_keymap(keymap: List[_KeyMapping], template_path: str, out_path: str) -> None:
+def _render_keymap(keymap: list[_KeyMapping], template_path: str, out_path: str) -> None:
     with open(template_path) as template_file:
         with open(out_path, "w") as out_file:
             template = textwrap.dedent(template_file.read())
@@ -145,8 +151,7 @@ def main() -> None:
     # Fields list:
     #   - Web
     #   - MCU code
-    #   - Arduino name
-    #   - OTG code (^ for mod)
+    #   - USB code (^ for the modifier mask)
     #   - PS/2 key
     #   - AT set1
     #   - X11 keysyms (^ for shift)

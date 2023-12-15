@@ -1,8 +1,8 @@
 # ========================================================================== #
 #                                                                            #
-#    KVMD - The main Pi-KVM daemon.                                          #
+#    KVMD - The main PiKVM daemon.                                           #
 #                                                                            #
-#    Copyright (C) 2018  Maxim Devaev <mdevaev@gmail.com>                    #
+#    Copyright (C) 2018-2023  Maxim Devaev <mdevaev@gmail.com>               #
 #                                                                            #
 #    This program is free software: you can redistribute it and/or modify    #
 #    it under the terms of the GNU General Public License as published by    #
@@ -22,9 +22,6 @@
 
 import dataclasses
 
-from typing import List
-from typing import Dict
-
 
 # =====
 class IpmiPasswdError(Exception):
@@ -43,8 +40,8 @@ class IpmiUserCredentials:
 class IpmiAuthManager:
     def __init__(self, path: str) -> None:
         self.__path = path
-        with open(path) as passwd_file:
-            self.__credentials = self.__parse_passwd_file(passwd_file.read().split("\n"))
+        with open(path) as file:
+            self.__credentials = self.__parse_passwd_file(file.read().split("\n"))
 
     def __contains__(self, ipmi_user: str) -> bool:
         return (ipmi_user in self.__credentials)
@@ -55,8 +52,8 @@ class IpmiAuthManager:
     def get_credentials(self, ipmi_user: str) -> IpmiUserCredentials:
         return self.__credentials[ipmi_user]
 
-    def __parse_passwd_file(self, lines: List[str]) -> Dict[str, IpmiUserCredentials]:
-        credentials: Dict[str, IpmiUserCredentials] = {}
+    def __parse_passwd_file(self, lines: list[str]) -> dict[str, IpmiUserCredentials]:
+        credentials: dict[str, IpmiUserCredentials] = {}
         for (lineno, line) in enumerate(lines):
             if len(line.strip()) == 0 or line.lstrip().startswith("#"):
                 continue

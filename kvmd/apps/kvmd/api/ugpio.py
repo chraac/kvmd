@@ -1,8 +1,8 @@
 # ========================================================================== #
 #                                                                            #
-#    KVMD - The main Pi-KVM daemon.                                          #
+#    KVMD - The main PiKVM daemon.                                           #
 #                                                                            #
-#    Copyright (C) 2018  Maxim Devaev <mdevaev@gmail.com>                    #
+#    Copyright (C) 2018-2023  Maxim Devaev <mdevaev@gmail.com>               #
 #                                                                            #
 #    This program is free software: you can redistribute it and/or modify    #
 #    it under the terms of the GNU General Public License as published by    #
@@ -23,14 +23,14 @@
 from aiohttp.web import Request
 from aiohttp.web import Response
 
+from ....htserver import exposed_http
+from ....htserver import make_json_response
+
 from ....validators.basic import valid_bool
 from ....validators.basic import valid_float_f0
 from ....validators.ugpio import valid_ugpio_channel
 
 from ..ugpio import UserGpio
-
-from ..http import exposed_http
-from ..http import make_json_response
 
 
 # =====
@@ -51,14 +51,14 @@ class UserGpioApi:
     async def __switch_handler(self, request: Request) -> Response:
         channel = valid_ugpio_channel(request.query.get("channel"))
         state = valid_bool(request.query.get("state"))
-        wait = valid_bool(request.query.get("wait", "0"))
+        wait = valid_bool(request.query.get("wait", False))
         await self.__user_gpio.switch(channel, state, wait)
         return make_json_response()
 
     @exposed_http("POST", "/gpio/pulse")
     async def __pulse_handler(self, request: Request) -> Response:
         channel = valid_ugpio_channel(request.query.get("channel"))
-        delay = valid_float_f0(request.query.get("delay", "0"))
-        wait = valid_bool(request.query.get("wait", "0"))
+        delay = valid_float_f0(request.query.get("delay", 0.0))
+        wait = valid_bool(request.query.get("wait", False))
         await self.__user_gpio.pulse(channel, delay, wait)
         return make_json_response()

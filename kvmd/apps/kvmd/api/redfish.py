@@ -1,8 +1,8 @@
 # ========================================================================== #
 #                                                                            #
-#    KVMD - The main Pi-KVM daemon.                                          #
+#    KVMD - The main PiKVM daemon.                                           #
 #                                                                            #
-#    Copyright (C) 2018  Maxim Devaev <mdevaev@gmail.com>                    #
+#    Copyright (C) 2018-2023  Maxim Devaev <mdevaev@gmail.com>               #
 #                                                                            #
 #    This program is free software: you can redistribute it and/or modify    #
 #    it under the terms of the GNU General Public License as published by    #
@@ -25,16 +25,16 @@ import asyncio
 from aiohttp.web import Request
 from aiohttp.web import Response
 
+from ....htserver import HttpError
+from ....htserver import exposed_http
+from ....htserver import make_json_response
+
 from ....plugins.atx import BaseAtx
 
 from ....validators import ValidatorError
 from ....validators import check_string_in_list
 
 from ..info import InfoManager
-
-from ..http import HttpError
-from ..http import exposed_http
-from ..http import make_json_response
 
 
 # =====
@@ -93,7 +93,7 @@ class RedfishApi:
             self.__info_manager.get_submanager("meta").get_state(),
         ])
         try:
-            host = meta_state.get("server", {})["host"]
+            host = str(meta_state.get("server", {})["host"])  # type: ignore
         except Exception:
             host = ""
         return make_json_response({
@@ -107,7 +107,7 @@ class RedfishApi:
             },
             "Id": "0",
             "HostName": host,
-            "PowerState": ("On" if atx_state["leds"]["power"] else "Off"),
+            "PowerState": ("On" if atx_state["leds"]["power"] else "Off"),  # type: ignore
         }, wrap_result=False)
 
     @exposed_http("POST", "/redfish/v1/Systems/0/Actions/ComputerSystem.Reset")
@@ -119,9 +119,9 @@ class RedfishApi:
                 variants=set(self.__actions),
                 lower=False,
             )
-        except Exception as err:
-            if isinstance(err, ValidatorError):
-                raise
+        except ValidatorError:
+            raise
+        except Exception:
             raise HttpError("Missing Redfish ResetType", 400)
         await self.__actions[action](False)
         return Response(body=None, status=204)

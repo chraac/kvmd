@@ -1,5 +1,5 @@
 [Unit]
-Description=Pi-KVM - HTTP entrypoint
+Description=PiKVM - HTTP entrypoint
 After=network.target network-online.target nss-lookup.target kvmd.service
 
 [Service]
@@ -7,9 +7,11 @@ Type=forking
 PIDFile=/run/kvmd/nginx.pid
 PrivateDevices=yes
 SyslogLevel=err
+Restart=always
+RestartSec=3
 
-ExecStart=/usr/bin/nginx -p /etc/kvmd/nginx -c /etc/kvmd/nginx/nginx.conf -g 'pid /run/kvmd/nginx.pid; user kvmd-nginx; error_log stderr;'
-ExecReload=/usr/bin/nginx -s reload -p /etc/kvmd/nginx -c /etc/kvmd/nginx/nginx.conf
+ExecStart=/usr/sbin/nginx -p /etc/kvmd/nginx -c /etc/kvmd/nginx/nginx.conf -g 'pid /run/kvmd/nginx.pid; user kvmd-nginx; error_log stderr;'
+ExecReload=/usr/sbin/nginx -s reload -p /etc/kvmd/nginx -c /etc/kvmd/nginx/nginx.conf -g 'pid /run/kvmd/nginx.pid; user kvmd-nginx; error_log stderr;'
 KillSignal=SIGQUIT
 KillMode=mixed
 TimeoutStopSec=3

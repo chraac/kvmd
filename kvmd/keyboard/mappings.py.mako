@@ -1,8 +1,8 @@
 # ========================================================================== #
 #                                                                            #
-#    KVMD - The main Pi-KVM daemon.                                          #
+#    KVMD - The main PiKVM daemon.                                           #
 #                                                                            #
-#    Copyright (C) 2018  Maxim Devaev <mdevaev@gmail.com>                    #
+#    Copyright (C) 2018-2023  Maxim Devaev <mdevaev@gmail.com>               #
 #                                                                            #
 #    This program is free software: you can redistribute it and/or modify    #
 #    it under the terms of the GNU General Public License as published by    #
@@ -22,8 +22,6 @@
 
 import dataclasses
 
-from typing import Dict
-
 
 # =====
 @dataclasses.dataclass(frozen=True)
@@ -32,7 +30,7 @@ class McuKey:
 
 
 @dataclasses.dataclass(frozen=True)
-class OtgKey:
+class UsbKey:
     code: int
     is_modifier: bool
 
@@ -40,12 +38,12 @@ class OtgKey:
 @dataclasses.dataclass(frozen=True)
 class Key:
     mcu: McuKey
-    otg: OtgKey
+    usb: UsbKey
 
 <%! import operator %>
-KEYMAP: Dict[str, Key] = {
+KEYMAP: dict[str, Key] = {
 % for km in sorted(keymap, key=operator.attrgetter("mcu_code")):
-    "${km.web_name}": Key(mcu=McuKey(code=${km.mcu_code}), otg=OtgKey(code=${km.otg_key.code}, is_modifier=${km.otg_key.is_modifier})),
+    "${km.web_name}": Key(mcu=McuKey(code=${km.mcu_code}), usb=UsbKey(code=${km.usb_key.code}, is_modifier=${km.usb_key.is_modifier})),
 % endfor
 }
 

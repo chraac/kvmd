@@ -1,8 +1,8 @@
 # ========================================================================== #
 #                                                                            #
-#    KVMD - The main Pi-KVM daemon.                                          #
+#    KVMD - The main PiKVM daemon.                                           #
 #                                                                            #
-#    Copyright (C) 2018  Maxim Devaev <mdevaev@gmail.com>                    #
+#    Copyright (C) 2018-2023  Maxim Devaev <mdevaev@gmail.com>               #
 #                                                                            #
 #    This program is free software: you can redistribute it and/or modify    #
 #    it under the terms of the GNU General Public License as published by    #
@@ -22,7 +22,6 @@
 
 import os
 
-from typing import List
 from typing import Any
 
 import pytest
@@ -87,18 +86,10 @@ def test_fail__valid_abs_path__dir(arg: Any) -> None:
     ("dsl-4.11.rc1.iso",                "dsl-4.11.rc1.iso"),
     ("systemrescuecd-x86-5.3.1.iso",    "systemrescuecd-x86-5.3.1.iso"),
     ("ubuntu-16.04.5-desktop-i386.iso", "ubuntu-16.04.5-desktop-i386.iso"),
-    (" тест(){}[ \t].iso\t", "тест(){}[ _].iso"),
-    ("\n" + "x" * 1000,          "x" * 255),
-    ("test",       "test"),
-    ("test test [test] #test$", "test test [test] #test$"),
-    (".test",      ".test"),
-    ("..test",     "..test"),
-    ("..тест..",   "..тест.."),
-    ("..те\\ст..", "..те\\ст.."),
-    (".....",      "....."),
-    (".....txt",   ".....txt"),
-    (" .. .",      ".. ."),
-    ("..\n.",      ".._."),
+    (" тест(){}[ \t].iso\t",            "тест(){}[ _].iso"),
+    ("\n" + "x" * 1000,                 "x" * 255),
+    ("test",                            "test"),
+    ("test test [test] #test$",         "test test [test] #test$"),
 ])
 def test_ok__valid_printable_filename(arg: Any, retval: str) -> None:
     assert valid_printable_filename(arg) == retval
@@ -111,6 +102,7 @@ def test_ok__valid_printable_filename(arg: Any, retval: str) -> None:
     "test/",
     "/test",
     "../test",
+    ".test",
     "./.",
     "../.",
     "./..",
@@ -118,6 +110,7 @@ def test_ok__valid_printable_filename(arg: Any, retval: str) -> None:
     "/ ..",
     ".. /",
     "/.. /",
+    "lost+found",
     "",
     " ",
     None,
@@ -148,7 +141,7 @@ def test_fail__valid_unix_mode(arg: Any) -> None:
     ("/bin/true, 1, 2, 3,",  ["/bin/true", "1", "2", "3"]),
     ("/bin/true",            ["/bin/true"]),
 ])
-def test_ok__valid_command(arg: Any, retval: List[str]) -> None:
+def test_ok__valid_command(arg: Any, retval: list[str]) -> None:
     assert valid_command(arg) == retval
 
 

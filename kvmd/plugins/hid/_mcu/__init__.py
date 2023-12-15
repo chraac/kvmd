@@ -1,8 +1,8 @@
 # ========================================================================== #
 #                                                                            #
-#    KVMD - The main Pi-KVM daemon.                                          #
+#    KVMD - The main PiKVM daemon.                                           #
 #                                                                            #
-#    Copyright (C) 2018  Maxim Devaev <mdevaev@gmail.com>                    #
+#    Copyright (C) 2018-2023  Maxim Devaev <mdevaev@gmail.com>               #
 #                                                                            #
 #    This program is free software: you can redistribute it and/or modify    #
 #    it under the terms of the GNU General Public License as published by    #
@@ -25,12 +25,10 @@ import contextlib
 import queue
 import time
 
-from typing import Tuple
-from typing import List
-from typing import Dict
 from typing import Iterable
 from typing import Generator
 from typing import AsyncGenerator
+from typing import Any
 
 from ....logging import get_logger
 
@@ -45,6 +43,7 @@ from ....validators.basic import valid_bool
 from ....validators.basic import valid_int_f0
 from ....validators.basic import valid_int_f1
 from ....validators.basic import valid_float_f01
+from ....validators.os import valid_abs_path
 from ....validators.hw import valid_gpio_pin_optional
 
 from .. import BaseHid
@@ -58,6 +57,7 @@ from .proto import RESPONSE_LEGACY_OK
 from .proto import BaseEvent
 from .proto import SetKeyboardOutputEvent
 from .proto import SetMouseOutputEvent
+from .proto import SetConnectedEvent
 from .proto import ClearEvent
 from .proto import KeyEvent
 from .proto import MouseButtonEvent
@@ -71,6 +71,10 @@ from .proto import check_response
 
 
 # =====
+class _SelfResetError(Exception):
+    pass
+
+
 class _RequestError(Exception):
     def __init__(self, msg: str) -> None:
         super().__init__(msg)
@@ -83,12 +87,6 @@ class _PermRequestError(_RequestError):
 
 class _TempRequestError(_RequestError):
     pass
-
-
-# =====
-class _HardResetEvent(BaseEvent):
-    def make_request(self) -> bytes:
-        raise RuntimeError("Don't call me")
 
 
 # =====
@@ -110,18 +108,17 @@ class BaseMcuHid(BaseHid, multiprocessing.Process):  # pylint: disable=too-many-
     def __init__(  # pylint: disable=too-many-arguments,super-init-not-called
         self,
         phy: BasePhy,
-
-        reset_pin: int,
-        reset_inverted: bool,
-        reset_delay: float,
-
+        reset_self: bool,
         read_retries: int,
         common_retries: int,
         retries_delay: float,
         errors_threshold: int,
         noop: bool,
+        jiggler: dict[str, Any],
+        **gpio_kwargs: Any,
     ) -> None:
 
+        BaseHid.__init__(self, **jiggler)
         multiprocessing.Process.__init__(self, daemon=True)
 
         self.__read_retries = read_retries
@@ -131,8 +128,11 @@ class BaseMcuHid(BaseHid, multiprocessing.Process):  # pylint: disable=too-many-
         self.__noop = noop
 
         self.__phy = phy
-        self.__gpio = Gpio(reset_pin, reset_inverted, reset_delay)
+        gpio_device_path = gpio_kwargs.pop("gpio_device_path")
+        self.__gpio = Gpio(device_path=gpio_device_path, **gpio_kwargs)
+        self.__reset_self = reset_self
 
+        self.__reset_required_event = multiprocessing.Event()
         self.__events_queue: "multiprocessing.Queue[BaseEvent]" = multiprocessing.Queue()
 
         self.__notifier = aiomulti.AioProcessNotifier()
@@ -145,48 +145,66 @@ class BaseMcuHid(BaseHid, multiprocessing.Process):  # pylint: disable=too-many-
         self.__stop_event = multiprocessing.Event()
 
     @classmethod
-    def get_plugin_options(cls) -> Dict:
+    def get_plugin_options(cls) -> dict:
         return {
-            "reset_pin":      Option(-1,    type=valid_gpio_pin_optional),
-            "reset_inverted": Option(False, type=valid_bool),
-            "reset_delay":    Option(0.1,   type=valid_float_f01),
+            # <gpio_kwargs>
+            "gpio_device":            Option("/dev/gpiochip0", type=valid_abs_path, unpack_as="gpio_device_path"),
+            "power_detect_pin":       Option(-1,    type=valid_gpio_pin_optional),
+            "power_detect_pull_down": Option(False, type=valid_bool),
+            "reset_pin":              Option(4,     type=valid_gpio_pin_optional),
+            "reset_inverted":         Option(False, type=valid_bool),
+            "reset_delay":            Option(0.1,   type=valid_float_f01),
+            # </gpio_kwargs>
+            "reset_self":             Option(False, type=valid_bool),
 
-            "read_retries":     Option(10,     type=valid_int_f1),
-            "common_retries":   Option(100,    type=valid_int_f1),
-            "retries_delay":    Option(0.1,    type=valid_float_f01),
-            "errors_threshold": Option(5,      type=valid_int_f0),
-            "noop":             Option(False,  type=valid_bool),
+            "read_retries":     Option(5,     type=valid_int_f1),
+            "common_retries":   Option(5,     type=valid_int_f1),
+            "retries_delay":    Option(0.5,   type=valid_float_f01),
+            "errors_threshold": Option(5,     type=valid_int_f0),
+            "noop":             Option(False, type=valid_bool),
+
+            **cls._get_jiggler_options(),
         }
 
     def sysprep(self) -> None:
         get_logger(0).info("Starting HID daemon ...")
         self.start()
 
-    async def get_state(self) -> Dict:
+    async def get_state(self) -> dict:
         state = await self.__state_flags.get()
         online = bool(state["online"])
         pong = (state["status"] >> 16) & 0xFF
-        outputs = (state["status"] >> 8) & 0xFF
-        features = state["status"] & 0xFF
+        outputs1 = (state["status"] >> 8) & 0xFF
+        outputs2 = state["status"] & 0xFF
 
         absolute = True
-        active_mouse = get_active_mouse(outputs)
+        active_mouse = get_active_mouse(outputs1)
         if online and active_mouse in ["usb_rel", "ps2"]:
             absolute = False
+        self._set_jiggler_absolute(absolute)
 
-        keyboard_outputs: Dict = {"available": [], "active": ""}
-        mouse_outputs: Dict = {"available": [], "active": ""}
+        keyboard_outputs: dict = {"available": [], "active": ""}
+        mouse_outputs: dict = {"available": [], "active": ""}
 
-        if outputs & 0b10000000:  # Dynamic
-            if features & 0b00000001:  # USB
-                keyboard_outputs["available"].extend(["usb"])
+        if outputs1 & 0b10000000:  # Dynamic
+            if outputs2 & 0b00000001:  # USB
+                keyboard_outputs["available"].append("usb")
                 mouse_outputs["available"].extend(["usb", "usb_rel"])
 
-            if features & 0b00000010:  # PS/2
-                keyboard_outputs["available"].extend(["ps2"])
-                mouse_outputs["available"].extend(["ps2"])
+            if outputs2 & 0b00000100:  # USB WIN98
+                mouse_outputs["available"].append("usb_win98")
 
-            active_keyboard = get_active_keyboard(outputs)
+            if outputs2 & 0b00000010:  # PS/2
+                keyboard_outputs["available"].append("ps2")
+                mouse_outputs["available"].append("ps2")
+
+            if keyboard_outputs["available"]:
+                keyboard_outputs["available"].append("disabled")
+
+            if mouse_outputs["available"]:
+                mouse_outputs["available"].append("disabled")
+
+            active_keyboard = get_active_keyboard(outputs1)
             if active_keyboard in keyboard_outputs["available"]:
                 keyboard_outputs["active"] = active_keyboard
 
@@ -196,6 +214,7 @@ class BaseMcuHid(BaseHid, multiprocessing.Process):  # pylint: disable=too-many-
         return {
             "online": online,
             "busy": bool(state["busy"]),
+            "connected": (bool(outputs2 & 0b01000000) if outputs2 & 0b10000000 else None),
             "keyboard": {
                 "online": (online and not (pong & 0b00001000)),
                 "leds": {
@@ -210,10 +229,11 @@ class BaseMcuHid(BaseHid, multiprocessing.Process):  # pylint: disable=too-many-
                 "absolute": absolute,
                 "outputs": mouse_outputs,
             },
+            **self._get_jiggler_state(),
         }
 
-    async def poll_state(self) -> AsyncGenerator[Dict, None]:
-        prev_state: Dict = {}
+    async def poll_state(self) -> AsyncGenerator[dict, None]:
+        prev_state: dict = {}
         while True:
             state = await self.get_state()
             if state != prev_state:
@@ -222,42 +242,63 @@ class BaseMcuHid(BaseHid, multiprocessing.Process):  # pylint: disable=too-many-
             await self.__notifier.wait()
 
     async def reset(self) -> None:
-        self.__queue_event(_HardResetEvent(), clear=True)
+        self.__reset_required_event.set()
 
-    @aiotools.atomic
+    @aiotools.atomic_fg
     async def cleanup(self) -> None:
         if self.is_alive():
             get_logger(0).info("Stopping HID daemon ...")
             self.__stop_event.set()
-        if self.exitcode is not None:
+        if self.is_alive() or self.exitcode is not None:
             self.join()
 
     # =====
 
-    def send_key_events(self, keys: Iterable[Tuple[str, bool]]) -> None:
+    def send_key_events(self, keys: Iterable[tuple[str, bool]]) -> None:
         for (key, state) in keys:
             self.__queue_event(KeyEvent(key, state))
+            self._bump_activity()
 
     def send_mouse_button_event(self, button: str, state: bool) -> None:
         self.__queue_event(MouseButtonEvent(button, state))
+        self._bump_activity()
 
     def send_mouse_move_event(self, to_x: int, to_y: int) -> None:
         self.__queue_event(MouseMoveEvent(to_x, to_y))
+        self._bump_activity()
 
     def send_mouse_relative_event(self, delta_x: int, delta_y: int) -> None:
         self.__queue_event(MouseRelativeEvent(delta_x, delta_y))
+        self._bump_activity()
 
     def send_mouse_wheel_event(self, delta_x: int, delta_y: int) -> None:
         self.__queue_event(MouseWheelEvent(delta_x, delta_y))
+        self._bump_activity()
 
-    def set_keyboard_output(self, output: str) -> None:
-        self.__queue_event(SetKeyboardOutputEvent(output), clear=True)
+    def set_params(
+        self,
+        keyboard_output: (str | None)=None,
+        mouse_output: (str | None)=None,
+        jiggler: (bool | None)=None,
+    ) -> None:
 
-    def set_mouse_output(self, output: str) -> None:
-        self.__queue_event(SetMouseOutputEvent(output), clear=True)
+        events: list[BaseEvent] = []
+        if keyboard_output is not None:
+            events.append(SetKeyboardOutputEvent(keyboard_output))
+        if mouse_output is not None:
+            events.append(SetMouseOutputEvent(mouse_output))
+        for (index, event) in enumerate(events, 1):
+            self.__queue_event(event, clear=(index == len(events)))
+        if jiggler is not None:
+            self._set_jiggler_active(jiggler)
+            self.__notifier.notify()
+
+    def set_connected(self, connected: bool) -> None:
+        self.__queue_event(SetConnectedEvent(connected), clear=True)
 
     def clear_events(self) -> None:
         self.__queue_event(ClearEvent(), clear=True)
+        self._bump_activity()
 
     def __queue_event(self, event: BaseEvent, clear: bool=False) -> None:
         if not self.__stop_event.is_set():
@@ -286,44 +327,63 @@ class BaseMcuHid(BaseHid, multiprocessing.Process):  # pylint: disable=too-many-
                 time.sleep(1)
 
     def __hid_loop(self) -> None:
-        logger = get_logger(0)
+        reset = True
         while not self.__stop_event.is_set():
             try:
-                if not self.__phy.has_device():
-                    logger.error("Missing HID device")
-                    time.sleep(1)
+                if not self.__hid_loop_wait_device(reset):
                     continue
-
+                reset = True
                 with self.__phy.connected() as conn:
                     while not (self.__stop_event.is_set() and self.__events_queue.qsize() == 0):
+                        if self.__reset_required_event.is_set():
+                            self.__set_state_busy(True)
+                            self.__reset_required_event.clear()
+                            break  # Проваливаемся и резетим в __hid_loop_wait_device()
                         try:
                             event = self.__events_queue.get(timeout=0.1)
                         except queue.Empty:
                             self.__process_request(conn, REQUEST_PING)
                         else:
-                            if isinstance(event, _HardResetEvent):
+                            if isinstance(event, (SetKeyboardOutputEvent, SetMouseOutputEvent)):
                                 self.__set_state_busy(True)
-                                self.__gpio.reset()
-                            else:
-                                if isinstance(event, (SetKeyboardOutputEvent, SetMouseOutputEvent)):
-                                    self.__set_state_busy(True)
-                                if not self.__process_request(conn, event.make_request()):
-                                    self.clear_events()
+                            if not self.__process_request(conn, event.make_request()):
+                                self.clear_events()
+            except _SelfResetError:
+                time.sleep(1)  # Pico перезагружается сам вскоре после ответа
+                reset = False
             except Exception:
                 self.clear_events()
-                logger.exception("Unexpected error in the HID loop")
+                get_logger(0).exception("Unexpected error in the HID loop")
                 time.sleep(1)
+
+    def __hid_loop_wait_device(self, reset: bool) -> bool:
+        logger = get_logger(0)
+        if reset:
+            logger.info("Initial HID reset and wait for %s ...", self.__phy)
+            self.__gpio.reset()
+            # На самом деле SPI и Serial-девайсы не пропадают,
+            # а вот USB CDC (Pico HID Bridge) вполне себе пропадает
+        for _ in range(10):
+            if self.__phy.has_device():
+                logger.info("Physical HID interface found: %s", self.__phy)
+                return True
+            if self.__stop_event.is_set():
+                break
+            time.sleep(1)
+        logger.error("Missing physical HID interface: %s", self.__phy)
+        self.__set_state_online(False)
+        return False
 
     def __process_request(self, conn: BasePhyConnection, request: bytes) -> bool:  # pylint: disable=too-many-branches
         logger = get_logger()
-        error_messages: List[str] = []
+        error_messages: list[str] = []
         live_log_errors = False
 
         common_retries = self.__common_retries
         read_retries = self.__read_retries
         error_retval = False
 
-        while common_retries and read_retries:
+        while self.__gpio.is_powered() and common_retries and read_retries:
             response = (RESPONSE_LEGACY_OK if self.__noop else conn.send(request))
             try:
                 if len(response) < 4:
@@ -373,6 +433,10 @@ class BaseMcuHid(BaseHid, multiprocessing.Process):  # pylint: disable=too-many-
                 if common_retries and read_retries:
                     time.sleep(self.__retries_delay)
 
+        if not self.__gpio.is_powered():
+            self.__set_state_online(False)
+            return True
+
         for msg in error_messages:
             logger.error(msg)
         if not (common_retries and read_retries):
@@ -392,4 +456,6 @@ class BaseMcuHid(BaseHid, multiprocessing.Process):  # pylint: disable=too-many-
         reset_required = (1 if response[1] & 0b01000000 else 0)
         self.__state_flags.update(online=1, busy=reset_required, status=status)
         if reset_required:
-            self.__gpio.reset()
+            if self.__reset_self:
+                raise _SelfResetError()
+            self.__reset_required_event.set()

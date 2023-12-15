@@ -1,8 +1,8 @@
 /*****************************************************************************
 #                                                                            #
-#    KVMD - The main Pi-KVM daemon.                                          #
+#    KVMD - The main PiKVM daemon.                                           #
 #                                                                            #
-#    Copyright (C) 2018  Maxim Devaev <mdevaev@gmail.com>                    #
+#    Copyright (C) 2018-2023  Maxim Devaev <mdevaev@gmail.com>               #
 #                                                                            #
 #    This program is free software: you can redistribute it and/or modify    #
 #    it under the terms of the GNU General Public License as published by    #
@@ -31,7 +31,7 @@ import {wm, initWindowManager} from "../wm.js";
 export function main() {
 	initWindowManager();
 
-	if (checkBrowser()) {
+	if (checkBrowser(null, null)) {
 		__setAppText();
 		__loadKvmdInfo();
 	}
@@ -51,7 +51,7 @@ function __setAppText() {
 }
 
 function __loadKvmdInfo() {
-	let http = tools.makeRequest("GET", "/api/info?fields=meta,extras", function() {
+	let http = tools.makeRequest("GET", "/api/info?fields=auth,meta,extras", function() {
 		if (http.readyState === 4) {
 			if (http.status === 200) {
 				let info = JSON.parse(http.responseText).result;
@@ -74,26 +74,31 @@ function __loadKvmdInfo() {
 				$("apps-box").innerHTML = "<ul id=\"apps\"></ul>";
 
 				// Don't use this option, it may be removed in any time
-				let hide_kvm_button = (info.meta !== null && info.meta.web && info.meta.web.hide_kvm_button);
+				let hide_kvm_button = (
+					(info.meta !== null && info.meta.web && info.meta.web.hide_kvm_button)
+					|| tools.config.getBool("index--hide-kvm-button", false)
+				);
 				if (!hide_kvm_button) {
 					$("apps").innerHTML += __makeApp(null, "kvm", "share/svg/kvm.svg", "KVM");
 				}
 
 				for (let app of apps) {
-					if (app.enabled) {
+					if (app.place >= 0 && (app.enabled || app.started)) {
 						$("apps").innerHTML += __makeApp(null, app.path, app.icon, app.name);
 					}
 				}
 
-				$("apps").innerHTML += __makeApp("logout-button", "#", "share/svg/logout.svg", "Logout");
-				tools.setOnClick($("logout-button"), __logout);
+				if (info.auth.enabled) {
+					$("apps").innerHTML += __makeApp("logout-button", "#", "share/svg/logout.svg", "Logout");
+					tools.el.setOnClick($("logout-button"), __logout);
+				}
 
 				if (info.meta !== null && info.meta.server && info.meta.server.host) {
 					$("kvmd-meta-server-host").innerHTML = info.meta.server.host;
-					document.title = `Pi-KVM Index: ${info.meta.server.host}`;
+					document.title = `PiKVM Index: ${info.meta.server.host}`;
 				} else {
 					$("kvmd-meta-server-host").innerHTML = "";
-					document.title = "Pi-KVM Index";
+					document.title = "PiKVM Index";
 				}
 			} else if (http.status === 401 || http.status === 403) {
 				document.location.href = "/login";

@@ -1,8 +1,8 @@
 /*****************************************************************************
 #                                                                            #
-#    KVMD - The main Pi-KVM daemon.                                          #
+#    KVMD - The main PiKVM daemon.                                           #
 #                                                                            #
-#    Copyright (C) 2018  Maxim Devaev <mdevaev@gmail.com>                    #
+#    Copyright (C) 2018-2023  Maxim Devaev <mdevaev@gmail.com>               #
 #                                                                            #
 #    This program is free software: you can redistribute it and/or modify    #
 #    it under the terms of the GNU General Public License as published by    #
@@ -31,20 +31,28 @@ import {Session} from "./session.js";
 
 
 export function main() {
-	if (checkBrowser()) {
-		window.onbeforeunload = function(event) {
-			let text = "Are you sure you want to close Pi-KVM session?";
-			event.returnValue = text;
-			return text;
-		};
+	if (checkBrowser(null, "/share/css/kvm/x-mobile.css")) {
+		tools.storage.bindSimpleSwitch($("page-close-ask-switch"), "page.close.ask", true, function(value) {
+			if (value) {
+				window.onbeforeunload = function(event) {
+					let text = "Are you sure you want to close PiKVM session?";
+					if (event) {
+						event.returnValue = text;
+					}
+					return text;
+				};
+			} else {
+				window.onbeforeunload = null;
+			}
+		});
 
 		initWindowManager();
 
-		tools.setOnClick($("show-about-button"), () => wm.showWindow($("about-window")));
-		tools.setOnClick($("show-keyboard-button"), () => wm.showWindow($("keyboard-window")));
-		tools.setOnClick($("show-stream-button"), () => wm.showWindow($("stream-window")));
-		tools.setOnClick($("open-log-button"), () => window.open("/api/log?seek=3600&follow=1", "_blank"));
+		tools.el.setOnClick($("open-log-button"), () => window.open("/api/log?seek=3600&follow=1", "_blank"));
 
+		if (tools.config.getBool("kvm--full-tab-stream", false)) {
+			wm.toggleFullTabWindow($("stream-window"), true);
+		}
 		wm.showWindow($("stream-window"));
 
 		new Session();

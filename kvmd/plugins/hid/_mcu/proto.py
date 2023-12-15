@@ -1,8 +1,8 @@
 # ========================================================================== #
 #                                                                            #
-#    KVMD - The main Pi-KVM daemon.                                          #
+#    KVMD - The main PiKVM daemon.                                           #
 #                                                                            #
-#    Copyright (C) 2018  Maxim Devaev <mdevaev@gmail.com>                    #
+#    Copyright (C) 2018-2023  Maxim Devaev <mdevaev@gmail.com>               #
 #                                                                            #
 #    This program is free software: you can redistribute it and/or modify    #
 #    it under the terms of the GNU General Public License as published by    #
@@ -25,6 +25,8 @@ import struct
 
 from ....keyboard.mappings import KEYMAP
 
+from ....mouse import MouseRange
+
 from .... import tools
 
 
@@ -36,14 +38,15 @@ class BaseEvent:
 
 # =====
 _KEYBOARD_NAMES_TO_CODES = {
-    "usb": 0b00000001,
-    "ps2": 0b00000011,
+    "disabled": 0b00000000,
+    "usb":      0b00000001,
+    "ps2":      0b00000011,
 }
 _KEYBOARD_CODES_TO_NAMES = tools.swapped_kvs(_KEYBOARD_NAMES_TO_CODES)
 
 
 def get_active_keyboard(outputs: int) -> str:
-    return _KEYBOARD_CODES_TO_NAMES.get(outputs & 0b00000111, "")
+    return _KEYBOARD_CODES_TO_NAMES.get(outputs & 0b00000111, "disabled")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -60,15 +63,17 @@ class SetKeyboardOutputEvent(BaseEvent):
 
 # =====
 _MOUSE_NAMES_TO_CODES = {
-    "usb":     0b00001000,
-    "usb_rel": 0b00010000,
-    "ps2":     0b00011000,
+    "disabled":  0b00000000,
+    "usb":       0b00001000,
+    "usb_rel":   0b00010000,
+    "ps2":       0b00011000,
+    "usb_win98": 0b00100000,
 }
 _MOUSE_CODES_TO_NAMES = tools.swapped_kvs(_MOUSE_NAMES_TO_CODES)
 
 
 def get_active_mouse(outputs: int) -> str:
-    return _MOUSE_CODES_TO_NAMES.get(outputs & 0b00111000, "")
+    return _MOUSE_CODES_TO_NAMES.get(outputs & 0b00111000, "disabled")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -80,6 +85,15 @@ class SetMouseOutputEvent(BaseEvent):
 
     def make_request(self) -> bytes:
         return _make_request(struct.pack(">BBxxx", 0x04, _MOUSE_NAMES_TO_CODES.get(self.mouse, 0)))
+
+
+# =====
+@dataclasses.dataclass(frozen=True)
+class SetConnectedEvent(BaseEvent):
+    connected: bool
+
+    def make_request(self) -> bytes:
+        return _make_request(struct.pack(">BBxxx", 0x05, int(self.connected)))
 
 
 # =====
@@ -134,8 +148,8 @@ class MouseMoveEvent(BaseEvent):
     to_y: int
 
     def __post_init__(self) -> None:
-        assert -32768 <= self.to_x <= 32767
-        assert -32768 <= self.to_y <= 32767
+        assert MouseRange.MIN <= self.to_x <= MouseRange.MAX
+        assert MouseRange.MIN <= self.to_y <= MouseRange.MAX
 
     def make_request(self) -> bytes:
         return _make_request(struct.pack(">Bhh", 0x12, self.to_x, self.to_y))

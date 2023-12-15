@@ -1,8 +1,8 @@
 # ========================================================================== #
 #                                                                            #
-#    KVMD - The main Pi-KVM daemon.                                          #
+#    KVMD - The main PiKVM daemon.                                           #
 #                                                                            #
-#    Copyright (C) 2018  Maxim Devaev <mdevaev@gmail.com>                    #
+#    Copyright (C) 2018-2023  Maxim Devaev <mdevaev@gmail.com>               #
 #                                                                            #
 #    This program is free software: you can redistribute it and/or modify    #
 #    it under the terms of the GNU General Public License as published by    #
@@ -20,9 +20,7 @@
 # ========================================================================== #
 
 
-from typing import Set
-from typing import Type
-from typing import Optional
+from typing import Callable
 from typing import Any
 
 from ...errors import OperationError
@@ -51,7 +49,6 @@ class GpioDriverOfflineError(GpioOperationError):
 class UserGpioModes:
     INPUT = "input"
     OUTPUT = "output"
-
     ALL = set([INPUT, OUTPUT])
 
 
@@ -71,31 +68,39 @@ class BaseUserGpioDriver(BasePlugin):
         return self._instance_name
 
     @classmethod
-    def get_modes(cls) -> Set[str]:
+    def get_modes(cls) -> set[str]:
         return set(UserGpioModes.ALL)
 
-    def register_input(self, pin: int, debounce: float) -> None:
+    @classmethod
+    def get_pin_validator(cls) -> Callable[[Any], Any]:
+        # XXX: The returned value will be forcibly converted to a string
+        # in kvmd/apps/kvmd/ugpio.py, i.e. AFTER validation.
         raise NotImplementedError
 
-    def register_output(self, pin: int, initial: Optional[bool]) -> None:
-        raise NotImplementedError
+    def register_input(self, pin: str, debounce: float) -> None:
+        _ = pin
+        _ = debounce
+
+    def register_output(self, pin: str, initial: (bool | None)) -> None:
+        _ = pin
+        _ = initial
 
     def prepare(self) -> None:
-        raise NotImplementedError
+        pass
 
     async def run(self) -> None:
+        await aiotools.wait_infinite()
+
+    async def cleanup(self) -> None:
+        pass
+
+    async def read(self, pin: str) -> bool:
         raise NotImplementedError
 
-    def cleanup(self) -> None:
-        raise NotImplementedError
-
-    def read(self, pin: int) -> bool:
-        raise NotImplementedError
-
-    def write(self, pin: int, state: bool) -> None:
+    async def write(self, pin: str, state: bool) -> None:
         raise NotImplementedError
 
 
 # =====
-def get_ugpio_driver_class(name: str) -> Type[BaseUserGpioDriver]:
+def get_ugpio_driver_class(name: str) -> type[BaseUserGpioDriver]:
     return get_plugin_class("ugpio", name)  # type: ignore

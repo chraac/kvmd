@@ -1,6 +1,6 @@
 # ========================================================================== #
 #                                                                            #
-#    KVMD - The main Pi-KVM daemon.                                          #
+#    KVMD - The main PiKVM daemon.                                           #
 #                                                                            #
 #    Copyright (C) 2020  Maxim Devaev <mdevaev@gmail.com>                    #
 #                                                                            #
@@ -22,21 +22,17 @@
 
 import asyncio
 import contextlib
-import json
+import struct
 import types
 
-from typing import Tuple
-from typing import Dict
-from typing import Set
 from typing import Callable
-from typing import Type
 from typing import AsyncGenerator
-from typing import Optional
 
 import aiohttp
 
 from .. import aiotools
 from .. import htclient
+from .. import htserver
 
 
 # =====
@@ -49,6 +45,18 @@ class _BaseApiPart:
 
         self._ensure_http_session = ensure_http_session
         self._make_url = make_url
+
+    async def _set_params(self, handle: str, **params: (int | str | None)) -> None:
+        session = self._ensure_http_session()
+        async with session.post(
+            url=self._make_url(handle),
+            params={
+                key: value
+                for (key, value) in params.items()
+                if value is not None
+            },
+        ) as response:
+            htclient.raise_not_200(response)
 
 
 class _AuthApiPart(_BaseApiPart):
@@ -65,30 +73,22 @@ class _AuthApiPart(_BaseApiPart):
 
 
 class _StreamerApiPart(_BaseApiPart):
-    async def get_state(self) -> Dict:
+    async def get_state(self) -> dict:
         session = self._ensure_http_session()
         async with session.get(self._make_url("streamer")) as response:
             htclient.raise_not_200(response)
             return (await response.json())["result"]
 
-    async def set_params(self, quality: Optional[int]=None, desired_fps: Optional[int]=None) -> None:
-        session = self._ensure_http_session()
-        async with session.post(
-            url=self._make_url("streamer/set_params"),
-            params={
-                key: value
-                for (key, value) in [
-                    ("quality", quality),
-                    ("desired_fps", desired_fps),
-                ]
-                if value is not None
-            },
-        ) as response:
-            htclient.raise_not_200(response)
+    async def set_params(self, quality: (int | None)=None, desired_fps: (int | None)=None) -> None:
+        await self._set_params(
+            "streamer/set_params",
+            quality=quality,
+            desired_fps=desired_fps,
+        )
 
 
 class _HidApiPart(_BaseApiPart):
-    async def get_keymaps(self) -> Tuple[str, Set[str]]:
+    async def get_keymaps(self) -> tuple[str, set[str]]:
         session = self._ensure_http_session()
         async with session.get(self._make_url("hid/keymaps")) as response:
             htclient.raise_not_200(response)
@@ -104,9 +104,16 @@ class _HidApiPart(_BaseApiPart):
         ) as response:
             htclient.raise_not_200(response)
 
+    async def set_params(self, keyboard_output: (str | None)=None, mouse_output: (str | None)=None) -> None:
+        await self._set_params(
+            "hid/set_params",
+            keyboard_output=keyboard_output,
+            mouse_output=mouse_output,
+        )
+
 
 class _AtxApiPart(_BaseApiPart):
-    async def get_state(self) -> Dict:
+    async def get_state(self) -> dict:
         session = self._ensure_http_session()
         async with session.get(self._make_url("atx")) as response:
             htclient.raise_not_200(response)
@@ -132,14 +139,14 @@ class KvmdClientWs:
     def __init__(self, ws: aiohttp.ClientWebSocketResponse) -> None:
         self.__ws = ws
 
-        self.__writer_queue: "asyncio.Queue[Dict]" = asyncio.Queue()
+        self.__writer_queue: "asyncio.Queue[tuple[str, dict] | bytes]" = asyncio.Queue()
         self.__communicated = False
 
-    async def communicate(self) -> AsyncGenerator[Dict, None]:
+    async def communicate(self) -> AsyncGenerator[tuple[str, dict], None]:  # pylint: disable=too-many-branches
         assert not self.__communicated
         self.__communicated = True
-        receive_task: Optional[asyncio.Task] = None
-        writer_task: Optional[asyncio.Task] = None
+        receive_task: (asyncio.Task | None) = None
+        writer_task: (asyncio.Task | None) = None
         try:
             while True:
                 if receive_task is None:
@@ -152,46 +159,45 @@ class KvmdClientWs:
                 if receive_task in done:
                     msg = receive_task.result()
                     if msg.type == aiohttp.WSMsgType.TEXT:
-                        yield json.loads(msg.data)
+                        yield htserver.parse_ws_event(msg.data)
                     elif msg.type == aiohttp.WSMsgType.CLOSE:
+                        await self.__ws.close()
+                    elif msg.type == aiohttp.WSMsgType.CLOSED:
                         break
                     else:
                         raise RuntimeError(f"Unhandled WS message type: {msg!r}")
                     receive_task = None
 
                 if writer_task in done:
-                    await self.__ws.send_str(json.dumps(writer_task.result()))
+                    payload = writer_task.result()
+                    if isinstance(payload, bytes):
+                        await self.__ws.send_bytes(payload)
+                    else:
+                        await htserver.send_ws_event(self.__ws, *payload)
                     writer_task = None
         finally:
             if receive_task:
                 receive_task.cancel()
             if writer_task:
                 writer_task.cancel()
-            self.__communicated = False
+            try:
+                await aiotools.shield_fg(self.__ws.close())
+            except Exception:
+                pass
+            finally:
+                self.__communicated = False
 
     async def send_key_event(self, key: str, state: bool) -> None:
-        await self.__writer_queue.put({
-            "event_type": "key",
-            "event": {"key": key, "state": state},
-        })
+        await self.__writer_queue.put(bytes([1, state]) + key.encode("ascii"))
 
     async def send_mouse_button_event(self, button: str, state: bool) -> None:
-        await self.__writer_queue.put({
-            "event_type": "mouse_button",
-            "event": {"button": button, "state": state},
-        })
+        await self.__writer_queue.put(bytes([2, state]) + button.encode("ascii"))
 
     async def send_mouse_move_event(self, to_x: int, to_y: int) -> None:
-        await self.__writer_queue.put({
-            "event_type": "mouse_move",
-            "event": {"to": {"x": to_x, "y": to_y}},
-        })
+        await self.__writer_queue.put(struct.pack(">bhh", 3, to_x, to_y))
 
     async def send_mouse_wheel_event(self, delta_x: int, delta_y: int) -> None:
-        await self.__writer_queue.put({
-            "event_type": "mouse_wheel",
-            "event": {"delta": {"x": delta_x, "y": delta_y}},
-        })
+        await self.__writer_queue.put(struct.pack(">bbbb", 5, 0, delta_x, delta_y))
 
 
 class KvmdClientSession:
@@ -204,7 +210,7 @@ class KvmdClientSession:
         self.__make_http_session = make_http_session
         self.__make_url = make_url
 
-        self.__http_session: Optional[aiohttp.ClientSession] = None
+        self.__http_session: (aiohttp.ClientSession | None) = None
 
         args = (self.__ensure_http_session, make_url)
 
@@ -234,7 +240,7 @@ class KvmdClientSession:
 
     async def __aexit__(
         self,
-        _exc_type: Type[BaseException],
+        _exc_type: type[BaseException],
         _exc: BaseException,
         _tb: types.TracebackType,
     ) -> None:
@@ -245,15 +251,11 @@ class KvmdClientSession:
 class KvmdClient:
     def __init__(
         self,
-        host: str,
-        port: int,
         unix_path: str,
         timeout: float,
         user_agent: str,
     ) -> None:
 
-        self.__host = host
-        self.__port = port
         self.__unix_path = unix_path
         self.__timeout = timeout
         self.__user_agent = user_agent
@@ -265,18 +267,17 @@ class KvmdClient:
         )
 
     def __make_http_session(self, user: str, passwd: str) -> aiohttp.ClientSession:
-        kwargs: Dict = {
+        kwargs: dict = {
             "headers": {
                 "X-KVMD-User": user,
                 "X-KVMD-Passwd": passwd,
                 "User-Agent": self.__user_agent,
             },
+            "connector": aiohttp.UnixConnector(path=self.__unix_path),
             "timeout": aiohttp.ClientTimeout(total=self.__timeout),
         }
-        if self.__unix_path:
-            kwargs["connector"] = aiohttp.UnixConnector(path=self.__unix_path)
         return aiohttp.ClientSession(**kwargs)
 
     def __make_url(self, handle: str) -> str:
         assert not handle.startswith("/"), handle
-        return f"http://{self.__host}:{self.__port}/{handle}"
+        return f"http://localhost:0/{handle}"

@@ -1,8 +1,8 @@
 # ========================================================================== #
 #                                                                            #
-#    KVMD - The main Pi-KVM daemon.                                          #
+#    KVMD - The main PiKVM daemon.                                           #
 #                                                                            #
-#    Copyright (C) 2018  Maxim Devaev <mdevaev@gmail.com>                    #
+#    Copyright (C) 2018-2023  Maxim Devaev <mdevaev@gmail.com>               #
 #                                                                            #
 #    This program is free software: you can redistribute it and/or modify    #
 #    it under the terms of the GNU General Public License as published by    #
@@ -20,7 +20,7 @@
 # ========================================================================== #
 
 
-from typing import Optional
+from typing import Generator
 from typing import Any
 
 from ....logging import get_logger
@@ -53,6 +53,16 @@ class MouseProcess(BaseDeviceProcess):
         self.__pressed_buttons = 0
         self.__x = 0  # For absolute
         self.__y = 0
+        self.__win98_fix = False
+
+    def is_absolute(self) -> bool:
+        return self.__absolute
+
+    def set_win98_fix(self, enabled: bool) -> None:
+        self.__win98_fix = enabled
+
+    def get_win98_fix(self) -> bool:
+        return self.__win98_fix
 
     def cleanup(self) -> None:
         self._stop()
@@ -65,7 +75,7 @@ class MouseProcess(BaseDeviceProcess):
             wheel_x=(0 if self.__horizontal_wheel else None),
             wheel_y=0,
         )
-        self._ensure_write(report, close=True)  # Release all buttons
+        self._cleanup_write(report)  # Release all buttons
 
     def send_clear_event(self) -> None:
         self._clear_queue()
@@ -80,7 +90,7 @@ class MouseProcess(BaseDeviceProcess):
 
     def send_move_event(self, to_x: int, to_y: int) -> None:
         if self.__absolute:
-            self._queue_event(MouseMoveEvent(to_x, to_y))
+            self._queue_event(MouseMoveEvent(to_x, to_y, self.__win98_fix))
 
     def send_relative_event(self, delta_x: int, delta_y: int) -> None:
         if not self.__absolute:
@@ -91,56 +101,52 @@ class MouseProcess(BaseDeviceProcess):
 
     # =====
 
-    def _process_event(self, event: BaseEvent) -> bool:
-        if isinstance(event, ClearEvent):
-            return self.__process_clear_event()
-        elif isinstance(event, ResetEvent):
-            return self.__process_clear_event(reopen=True)
+    def _process_event(self, event: BaseEvent) -> Generator[bytes, None, None]:
+        if isinstance(event, (ClearEvent, ResetEvent)):
+            yield self.__process_clear_event()
         elif isinstance(event, MouseButtonEvent):
-            return self.__process_button_event(event)
+            yield from self.__process_button_event(event)
         elif isinstance(event, MouseMoveEvent):
-            return self.__process_move_event(event)
+            yield self.__process_move_event(event)
         elif isinstance(event, MouseRelativeEvent):
-            return self.__process_relative_event(event)
+            yield self.__process_relative_event(event)
         elif isinstance(event, MouseWheelEvent):
-            return self.__process_wheel_event(event)
-        raise RuntimeError(f"Not implemented event: {event}")
+            yield self.__process_wheel_event(event)
+        else:
+            raise RuntimeError(f"Not implemented event: {event}")
 
-    def __process_clear_event(self, reopen: bool=False) -> bool:
+    def __process_clear_event(self) -> bytes:
         self.__clear_state()
-        return self.__send_current_state(reopen=reopen)
+        return self.__make_report()
 
-    def __process_button_event(self, event: MouseButtonEvent) -> bool:
+    def __process_button_event(self, event: MouseButtonEvent) -> Generator[bytes, None, None]:
         if event.code & self.__pressed_buttons:
             # Ранее нажатую кнопку отжимаем
             self.__pressed_buttons &= ~event.code
-            if not self.__send_current_state():
-                return False
+            yield self.__make_report()
         if event.state:
             # Нажимаем если нужно
             self.__pressed_buttons |= event.code
-            return self.__send_current_state()
-        return True
+            yield self.__make_report()
 
-    def __process_move_event(self, event: MouseMoveEvent) -> bool:
+    def __process_move_event(self, event: MouseMoveEvent) -> bytes:
         self.__x = event.to_fixed_x
         self.__y = event.to_fixed_y
-        return self.__send_current_state()
+        return self.__make_report()
 
-    def __process_relative_event(self, event: MouseRelativeEvent) -> bool:
-        return self.__send_current_state(relative_event=event)
+    def __process_relative_event(self, event: MouseRelativeEvent) -> bytes:
+        return self.__make_report(relative_event=event)
 
-    def __process_wheel_event(self, event: MouseWheelEvent) -> bool:
-        return self.__send_current_state(wheel_event=event)
+    def __process_wheel_event(self, event: MouseWheelEvent) -> bytes:
+        return self.__make_report(wheel_event=event)
 
     # =====
 
-    def __send_current_state(
+    def __make_report(
         self,
-        relative_event: Optional[MouseRelativeEvent]=None,
-        wheel_event: Optional[MouseWheelEvent]=None,
-        reopen: bool=False,
-    ) -> bool:
+        relative_event: (MouseRelativeEvent | None)=None,
+        wheel_event: (MouseWheelEvent | None)=None,
+    ) -> bytes:
 
         if self.__absolute:
             assert relative_event is None
@@ -160,7 +166,7 @@ class MouseProcess(BaseDeviceProcess):
         else:
             wheel_x = wheel_y = 0
 
-        report = make_mouse_report(
+        return make_mouse_report(
             absolute=self.__absolute,
             buttons=self.__pressed_buttons,
             move_x=move_x,
@@ -168,10 +174,6 @@ class MouseProcess(BaseDeviceProcess):
             wheel_x=(wheel_x if self.__horizontal_wheel else None),
             wheel_y=wheel_y,
         )
-        if not self._ensure_write(report, reopen=reopen):
-            self.__clear_state()
-            return False
-        return True
 
     def __clear_state(self) -> None:
         self.__pressed_buttons = 0

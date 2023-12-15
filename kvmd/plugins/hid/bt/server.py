@@ -1,8 +1,8 @@
 # ========================================================================== #
 #                                                                            #
-#    KVMD - The main Pi-KVM daemon.                                          #
+#    KVMD - The main PiKVM daemon.                                           #
 #                                                                            #
-#    Copyright (C) 2018  Maxim Devaev <mdevaev@gmail.com>                    #
+#    Copyright (C) 2018-2023  Maxim Devaev <mdevaev@gmail.com>               #
 #                                                                            #
 #    This program is free software: you can redistribute it and/or modify    #
 #    it under the terms of the GNU General Public License as published by    #
@@ -29,18 +29,14 @@ import contextlib
 import queue
 
 from typing import Literal
-from typing import List
-from typing import Dict
-from typing import Set
 from typing import Generator
-from typing import Optional
 
 from ....logging import get_logger
 
 from .... import tools
 from .... import aiomulti
 
-from ....keyboard.mappings import OtgKey
+from ....keyboard.mappings import UsbKey
 
 from ..otg.events import BaseEvent
 from ..otg.events import ClearEvent
@@ -72,8 +68,8 @@ _SockAttrT = Literal["ctl_sock", "int_sock"]
 @dataclasses.dataclass
 class _BtClient:
     addr: str
-    ctl_sock: Optional[socket.socket] = None
-    int_sock: Optional[socket.socket] = None
+    ctl_sock: (socket.socket | None) = None
+    int_sock: (socket.socket | None) = None
 
 
 # =====
@@ -104,8 +100,8 @@ class BtServer:  # pylint: disable=too-many-instance-attributes
 
         self.__stop_event = stop_event
 
-        self.__clients: Dict[str, _BtClient] = {}
-        self.__to_read: Set[socket.socket] = set()
+        self.__clients: dict[str, _BtClient] = {}
+        self.__to_read: set[socket.socket] = set()
 
         self.__events_queue: "multiprocessing.Queue[BaseEvent]" = multiprocessing.Queue()
 
@@ -115,8 +111,8 @@ class BtServer:  # pylint: disable=too-many-instance-attributes
             "scroll": False,
             "num": False,
         }, notifier)
-        self.__modifiers: Set[OtgKey] = set()
-        self.__keys: List[Optional[OtgKey]] = [None] * 6
+        self.__modifiers: set[UsbKey] = set()
+        self.__keys: list[UsbKey | None] = [None] * 6
         self.__mouse_buttons = 0
 
     def run(self) -> None:
@@ -132,7 +128,7 @@ class BtServer:  # pylint: disable=too-many-instance-attributes
                 self.__close_all_clients(no_change_public=True)
                 self.__set_public(False)
 
-    async def get_state(self) -> Dict:
+    async def get_state(self) -> dict:
         return (await self.__state_flags.get())
 
     def queue_event(self, event: BaseEvent) -> None:
@@ -151,7 +147,7 @@ class BtServer:  # pylint: disable=too-many-instance-attributes
     @contextlib.contextmanager
     def __listen(self, role: _RoleT, addr: str, port: int) -> Generator[socket.socket, None, None]:
         get_logger(0).info("Listening [%s]:%d for %s ...", addr, port, role)
-        with socket.socket(socket.AF_BLUETOOTH, socket.SOCK_SEQPACKET, socket.BTPROTO_L2CAP) as sock:
+        with socket.socket(socket.AF_BLUETOOTH, socket.SOCK_SEQPACKET, socket.BTPROTO_L2CAP) as sock:  # type: ignore
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             sock.settimeout(self.__socket_timeout)
             sock.bind((addr, port))
@@ -187,8 +183,7 @@ class BtServer:  # pylint: disable=too-many-instance-attributes
                         elif data == b"\x71":
                             sock.send(b"\x00")
                     except Exception as err:
-                        get_logger(0).exception("CTL socket error on %s: %s: %s",
-                                                client.addr, type(err).__name__, err)
+                        get_logger(0).exception("CTL socket error on %s: %s", client.addr, tools.efmt(err))
                         self.__close_client("CTL", client, "ctl_sock")
                         continue
 
@@ -202,8 +197,7 @@ class BtServer:  # pylint: disable=too-many-instance-attributes
                         elif data[:2] == b"\xA2\x01":
                             self.__process_leds(data[2])
                     except Exception as err:
-                        get_logger(0).exception("INT socket error on %s: %s: %s",
-                                                client.addr, type(err).__name__, err)
+                        get_logger(0).exception("INT socket error on %s: %s", client.addr, tools.efmt(err))
                         self.__close_client("INT", client, "ctl_sock")
 
             if qr in ready_read:
@@ -286,8 +280,7 @@ class BtServer:  # pylint: disable=too-many-instance-attributes
         try:
             client.int_sock.send(report)
         except Exception as err:
-            get_logger(0).info("Can't send %s report to %s: %s: %s",
-                               name, client.addr, type(err).__name__, err)
+            get_logger(0).info("Can't send %s report to %s: %s", name, client.addr, tools.efmt(err))
             self.__close_client_pair(client)
 
     def __clear_modifiers(self) -> None:
@@ -379,7 +372,7 @@ class BtServer:  # pylint: disable=too-many-instance-attributes
             try:
                 self.__iface.set_public(public)
             except Exception as err:
-                logger.error("Can't change public mode: %s: %s", type(err).__name__, err)
+                logger.error("Can't change public mode: %s", tools.efmt(err))
 
     def __unpair_client(self, client: _BtClient) -> None:
         logger = get_logger(0)
@@ -387,4 +380,4 @@ class BtServer:  # pylint: disable=too-many-instance-attributes
         try:
             self.__iface.unpair(client.addr)
         except Exception as err:
-            logger.error("Can't unpair %s: %s: %s", client.addr, type(err).__name__, err)
+            logger.error("Can't unpair %s: %s", client.addr, tools.efmt(err))

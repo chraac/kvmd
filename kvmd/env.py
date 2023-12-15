@@ -1,8 +1,8 @@
 # ========================================================================== #
 #                                                                            #
-#    KVMD - The main Pi-KVM daemon.                                          #
+#    KVMD - The main PiKVM daemon.                                           #
 #                                                                            #
-#    Copyright (C) 2018  Maxim Devaev <mdevaev@gmail.com>                    #
+#    Copyright (C) 2018-2023  Maxim Devaev <mdevaev@gmail.com>               #
 #                                                                            #
 #    This program is free software: you can redistribute it and/or modify    #
 #    it under the terms of the GNU General Public License as published by    #
@@ -20,14 +20,7 @@
 # ========================================================================== #
 
 
-import os
-
-
 # =====
-# XXX: Don't use these variables for any purpose other than testing.
-# It can be removed at any time.
-
-GPIO_DEVICE_PATH = str(os.getenv("KVMD_GPIO_DEVICE_PATH", "/dev/gpiochip0")).strip()
-
-SYSFS_PREFIX = str(os.getenv("KVMD_SYSFS_PREFIX", "")).strip()
-PROCFS_PREFIX = str(os.getenv("KVMD_PROCFS_PREFIX", "")).strip()
+ETC_PREFIX = ""
+SYSFS_PREFIX = ""
+PROCFS_PREFIX = ""

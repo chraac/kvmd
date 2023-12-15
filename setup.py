@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # ========================================================================== #
 #                                                                            #
-#    KVMD - The main Pi-KVM daemon.                                          #
+#    KVMD - The main PiKVM daemon.                                           #
 #                                                                            #
-#    Copyright (C) 2018  Maxim Devaev <mdevaev@gmail.com>                    #
+#    Copyright (C) 2018-2023  Maxim Devaev <mdevaev@gmail.com>               #
 #                                                                            #
 #    This program is free software: you can redistribute it and/or modify    #
 #    it under the terms of the GNU General Public License as published by    #
@@ -21,7 +21,6 @@
 # ========================================================================== #
 
 
-import os
 import textwrap
 
 import setuptools.command.easy_install
@@ -29,50 +28,40 @@ from setuptools import setup
 
 
 # =====
+class _Template(str):
+    def __init__(self, text: str) -> None:
+        self.__text = textwrap.dedent(text).strip()
+
+    def __mod__(self, kv: dict) -> str:
+        kv = {"module_name": kv["ep"].module_name, **kv}
+        return (self.__text % (kv))
+
+
 class _ScriptWriter(setuptools.command.easy_install.ScriptWriter):
-    template = textwrap.dedent("""
-        # EASY-INSTALL-ENTRY-SCRIPT: {spec},{group},{name}
+    template = _Template("""
+        # EASY-INSTALL-ENTRY-SCRIPT: %(spec)r,%(group)r,%(name)r
 
-        __requires__ = "{spec}"
+        __requires__ = %(spec)r
 
-        from {module} import main
+        from %(module_name)s import main
 
-        if __name__ == "__main__":
+        if __name__ == '__main__':
             main()
-    """).strip()
-
-    @classmethod
-    def get_args(cls, dist, header=None):  # type: ignore
-        if header is None:
-            header = cls.get_header()
-        spec = str(dist.as_requirement())
-        for group_type in ["console", "gui"]:
-            group = group_type + "_scripts"
-            for (name, ep) in dist.get_entry_map(group).items():
-                cls._ensure_safe_name(name)
-                script_text = cls.template.format(
-                    spec=spec,
-                    group=group,
-                    name=name,
-                    module=ep.module_name,
-                )
-                yield from cls._get_script_args(group_type, name, header, script_text)
+    """)
 
 
 # =====
 def main() -> None:
     setuptools.command.easy_install.ScriptWriter = _ScriptWriter
-    setuptools.command.easy_install.get_script_args = _ScriptWriter.get_script_args
-    setuptools.command.easy_install.get_script_header = _ScriptWriter.get_script_header
 
     setup(
         name="kvmd",
-        version="2.8",
+        version="3.288",
         url="https://github.com/pikvm/kvmd",
         license="GPLv3",
         author="Maxim Devaev",
         author_email="mdevaev@gmail.com",
-        description="The main Pi-KVM daemon",
+        description="The main PiKVM daemon",
         platforms="any",
 
         packages=[
@@ -86,9 +75,9 @@ def main() -> None:
             "kvmd.plugins.hid._mcu",
             "kvmd.plugins.hid.otg",
             "kvmd.plugins.hid.bt",
+            "kvmd.plugins.hid.ch9329",
             "kvmd.plugins.atx",
             "kvmd.plugins.msd",
-            "kvmd.plugins.msd.relay",
             "kvmd.plugins.msd.otg",
             "kvmd.plugins.ugpio",
             "kvmd.clients",
@@ -96,52 +85,58 @@ def main() -> None:
             "kvmd.apps.kvmd",
             "kvmd.apps.kvmd.info",
             "kvmd.apps.kvmd.api",
+            "kvmd.apps.pst",
+            "kvmd.apps.pstrun",
             "kvmd.apps.otg",
             "kvmd.apps.otg.hid",
             "kvmd.apps.otgnet",
             "kvmd.apps.otgmsd",
+            "kvmd.apps.otgconf",
             "kvmd.apps.htpasswd",
+            "kvmd.apps.totp",
+            "kvmd.apps.edidconf",
             "kvmd.apps.cleanup",
             "kvmd.apps.ipmi",
             "kvmd.apps.vnc",
             "kvmd.apps.vnc.rfb",
+            "kvmd.apps.janus",
+            "kvmd.apps.watchdog",
             "kvmd.helpers",
-            "kvmd.helpers.otgmsd",
-            "kvmd.helpers.otgmsd.unlock",
-            "kvmd.helpers.otgmsd.remount",
+            "kvmd.helpers.remount",
+            "kvmd.helpers.swapfiles",
         ],
 
         package_data={
             "kvmd.apps.vnc": ["fonts/*.ttf"],
         },
 
-        scripts=[
-            os.path.join("scripts", name)
-            for name in os.listdir("scripts")
-            if not name.startswith(".")
-        ],
-
         entry_points={
             "console_scripts": [
                 "kvmd = kvmd.apps.kvmd:main",
+                "kvmd-pst = kvmd.apps.pst:main",
+                "kvmd-pstrun = kvmd.apps.pstrun:main",
                 "kvmd-otg = kvmd.apps.otg:main",
                 "kvmd-otgnet = kvmd.apps.otgnet:main",
                 "kvmd-otgmsd = kvmd.apps.otgmsd:main",
+                "kvmd-otgconf = kvmd.apps.otgconf:main",
                 "kvmd-htpasswd = kvmd.apps.htpasswd:main",
+                "kvmd-totp = kvmd.apps.totp:main",
+                "kvmd-edidconf = kvmd.apps.edidconf:main",
                 "kvmd-cleanup = kvmd.apps.cleanup:main",
                 "kvmd-ipmi = kvmd.apps.ipmi:main",
                 "kvmd-vnc = kvmd.apps.vnc:main",
-                "kvmd-helper-otgmsd-unlock = kvmd.helpers.otgmsd.unlock:main",
-                "kvmd-helper-otgmsd-remount = kvmd.helpers.otgmsd.remount:main",
+                "kvmd-janus = kvmd.apps.janus:main",
+                "kvmd-watchdog = kvmd.apps.watchdog:main",
+                "kvmd-helper-pst-remount = kvmd.helpers.remount:main",
+                "kvmd-helper-otgmsd-remount = kvmd.helpers.remount:main",
+                "kvmd-helper-swapfiles = kvmd.helpers.swapfiles:main",
             ],
         },
 
         classifiers=[
             "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
-            "Development Status :: 4 - Beta",
-            "Programming Language :: Python :: 3.7",
-            "Programming Language :: Python :: 3.8",
-            "Programming Language :: Python :: 3.9",
+            "Development Status :: 5 - Production/Stable",
+            "Programming Language :: Python :: 3.11",
             "Topic :: System :: Systems Administration",
             "Operating System :: POSIX :: Linux",
             "Intended Audience :: System Administrators",

@@ -1,8 +1,8 @@
 # ========================================================================== #
 #                                                                            #
-#    KVMD - The main Pi-KVM daemon.                                          #
+#    KVMD - The main PiKVM daemon.                                           #
 #                                                                            #
-#    Copyright (C) 2018  Maxim Devaev <mdevaev@gmail.com>                    #
+#    Copyright (C) 2018-2023  Maxim Devaev <mdevaev@gmail.com>               #
 #                                                                            #
 #    This program is free software: you can redistribute it and/or modify    #
 #    it under the terms of the GNU General Public License as published by    #
@@ -20,7 +20,6 @@
 # ========================================================================== #
 
 
-from typing import List
 from typing import Any
 
 import pytest
@@ -168,7 +167,7 @@ def test_fail__valid_port(arg: Any) -> None:
     ("80,443,443,", [80, 443, 443]),
     (65535,         [65535]),
 ])
-def test_ok__valid_ports_list(arg: Any, retval: List[int]) -> None:
+def test_ok__valid_ports_list(arg: Any, retval: list[int]) -> None:
     assert valid_ports_list(arg) == retval
 
 

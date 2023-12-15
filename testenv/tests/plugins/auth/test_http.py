@@ -1,8 +1,8 @@
 # ========================================================================== #
 #                                                                            #
-#    KVMD - The main Pi-KVM daemon.                                          #
+#    KVMD - The main PiKVM daemon.                                           #
 #                                                                            #
-#    Copyright (C) 2018  Maxim Devaev <mdevaev@gmail.com>                    #
+#    Copyright (C) 2018-2023  Maxim Devaev <mdevaev@gmail.com>               #
 #                                                                            #
 #    This program is free software: you can redistribute it and/or modify    #
 #    it under the terms of the GNU General Public License as published by    #
@@ -20,13 +20,13 @@
 # ========================================================================== #
 
 
-from typing import Dict
 from typing import AsyncGenerator
 
 import aiohttp.web
 import aiohttp_basicauth
 
 import pytest
+import pytest_asyncio
 
 from . import get_configured_auth_service
 
@@ -41,7 +41,7 @@ async def _handle_auth(request: aiohttp.web.BaseRequest) -> aiohttp.web.Response
     return aiohttp.web.Response(text=str(status), status=status)
 
 
-@pytest.fixture(name="auth_server_port")
+@pytest_asyncio.fixture(name="auth_server_port")
 async def _auth_server_port_fixture(aiohttp_server) -> AsyncGenerator[int, None]:  # type: ignore
     auth = aiohttp_basicauth.BasicAuthMiddleware(
         username="server-admin",
@@ -67,7 +67,7 @@ async def _auth_server_port_fixture(aiohttp_server) -> AsyncGenerator[int, None]
     {"verify": False},
     {"user": "server-admin", "passwd": "server-pass"},
 ])
-async def test_ok(auth_server_port: int, kwargs: Dict) -> None:
+async def test_ok(auth_server_port: int, kwargs: dict) -> None:
     url = "http://localhost:%d/%s" % (
         auth_server_port,
         ("auth_plus_basic" if kwargs.get("user") else "auth"),

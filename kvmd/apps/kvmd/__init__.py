@@ -1,8 +1,8 @@
 # ========================================================================== #
 #                                                                            #
-#    KVMD - The main Pi-KVM daemon.                                          #
+#    KVMD - The main PiKVM daemon.                                           #
 #                                                                            #
-#    Copyright (C) 2018  Maxim Devaev <mdevaev@gmail.com>                    #
+#    Copyright (C) 2018-2023  Maxim Devaev <mdevaev@gmail.com>               #
 #                                                                            #
 #    This program is free software: you can redistribute it and/or modify    #
 #    it under the terms of the GNU General Public License as published by    #
@@ -20,9 +20,6 @@
 # ========================================================================== #
 
 
-from typing import List
-from typing import Optional
-
 from ...logging import get_logger
 
 from ...plugins.hid import get_hid_class
@@ -34,18 +31,18 @@ from .. import init
 from .auth import AuthManager
 from .info import InfoManager
 from .logreader import LogReader
-from .wol import WakeOnLan
 from .ugpio import UserGpio
 from .streamer import Streamer
 from .snapshoter import Snapshoter
+from .ocr import Ocr
 from .server import KvmdServer
 
 
 # =====
-def main(argv: Optional[List[str]]=None) -> None:
+def main(argv: (list[str] | None)=None) -> None:
     config = init(
         prog="kvmd",
-        description="The main Pi-KVM daemon",
+        description="The main PiKVM daemon",
         argv=argv,
         check_run=True,
         load_auth=True,
@@ -59,7 +56,7 @@ def main(argv: Optional[List[str]]=None) -> None:
     if config.kvmd.msd.type == "otg":
         msd_kwargs["gadget"] = config.otg.gadget  # XXX: Small crutch to pass gadget name to the plugin
 
-    hid_kwargs = config.kvmd.hid._unpack(ignore=["type", "keymap"])
+    hid_kwargs = config.kvmd.hid._unpack(ignore=["type", "keymap", "ignore_keys", "mouse_x_range", "mouse_y_range"])
     if config.kvmd.hid.type == "otg":
         hid_kwargs["udc"] = config.otg.udc  # XXX: Small crutch to pass UDC to the plugin
 
@@ -67,21 +64,32 @@ def main(argv: Optional[List[str]]=None) -> None:
     config = config.kvmd
 
     hid = get_hid_class(config.hid.type)(**hid_kwargs)
-    streamer = Streamer(**config.streamer._unpack(ignore=["forever"]))
+    streamer = Streamer(
+        **config.streamer._unpack(ignore=["forever", "desired_fps", "resolution", "h264_bitrate", "h264_gop"]),
+        **config.streamer.resolution._unpack(),
+        **config.streamer.desired_fps._unpack(),
+        **config.streamer.h264_bitrate._unpack(),
+        **config.streamer.h264_gop._unpack(),
+    )
 
     KvmdServer(
         auth_manager=AuthManager(
+            enabled=config.auth.enabled,
+            unauth_paths=([] if config.prometheus.auth.enabled else ["/export/prometheus/metrics"]),
+
             internal_type=config.auth.internal.type,
             internal_kwargs=config.auth.internal._unpack(ignore=["type", "force_users"]),
+            force_internal_users=config.auth.internal.force_users,
+
             external_type=config.auth.external.type,
             external_kwargs=(config.auth.external._unpack(ignore=["type"]) if config.auth.external.type else {}),
-            force_internal_users=config.auth.internal.force_users,
-            enabled=config.auth.enabled,
+
+            totp_secret_path=config.auth.totp.secret.file,
         ),
         info_manager=InfoManager(global_config),
-        log_reader=LogReader(),
-        wol=WakeOnLan(**config.wol._unpack()),
-        user_gpio=UserGpio(config.gpio),
+        log_reader=(LogReader() if config.log_reader.enabled else None),
+        user_gpio=UserGpio(config.gpio, global_config.otg),
+        ocr=Ocr(**config.ocr._unpack()),
 
         hid=hid,
         atx=get_atx_class(config.atx.type)(**config.atx._unpack(ignore=["type"])),
@@ -94,12 +102,12 @@ def main(argv: Optional[List[str]]=None) -> None:
             **config.snapshot._unpack(),
         ),
 
-        heartbeat=config.server.heartbeat,
-        sync_chunk_size=config.server.sync_chunk_size,
-
         keymap_path=config.hid.keymap,
+        ignore_keys=config.hid.ignore_keys,
+        mouse_x_range=(config.hid.mouse_x_range.min, config.hid.mouse_x_range.max),
+        mouse_y_range=(config.hid.mouse_y_range.min, config.hid.mouse_y_range.max),
 
         stream_forever=config.streamer.forever,
-    ).run(**config.server._unpack(ignore=["heartbeat", "sync_chunk_size"]))
+    ).run(**config.server._unpack())
 
     get_logger(0).info("Bye-bye")

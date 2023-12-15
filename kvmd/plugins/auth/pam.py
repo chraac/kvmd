@@ -1,8 +1,8 @@
 # ========================================================================== #
 #                                                                            #
-#    KVMD - The main Pi-KVM daemon.                                          #
+#    KVMD - The main PiKVM daemon.                                           #
 #                                                                            #
-#    Copyright (C) 2018  Maxim Devaev <mdevaev@gmail.com>                    #
+#    Copyright (C) 2018-2023  Maxim Devaev <mdevaev@gmail.com>               #
 #                                                                            #
 #    This program is free software: you can redistribute it and/or modify    #
 #    it under the terms of the GNU General Public License as published by    #
@@ -23,9 +23,6 @@
 import asyncio
 import pwd
 
-from typing import List
-from typing import Dict
-
 import pam
 
 from ...yamlconf import Option
@@ -45,8 +42,8 @@ class Plugin(BaseAuthService):
     def __init__(  # pylint: disable=super-init-not-called
         self,
         service: str,
-        allow_users: List[str],
-        deny_users: List[str],
+        allow_users: list[str],
+        deny_users: list[str],
         allow_uids_at: int,
     ) -> None:
 
@@ -58,12 +55,12 @@ class Plugin(BaseAuthService):
         self.__lock = asyncio.Lock()
 
     @classmethod
-    def get_plugin_options(cls) -> Dict:
+    def get_plugin_options(cls) -> dict:
         return {
             "service":       Option("login"),
             "allow_users":   Option([], type=valid_users_list),
             "deny_users":    Option([], type=valid_users_list),
-            "allow_uids_at": Option(0, type=valid_int_f0),
+            "allow_uids_at": Option(0,  type=valid_int_f0),
         }
 
     async def authorize(self, user: str, passwd: str) -> bool:

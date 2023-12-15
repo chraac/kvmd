@@ -1,8 +1,8 @@
 # ========================================================================== #
 #                                                                            #
-#    KVMD - The main Pi-KVM daemon.                                          #
+#    KVMD - The main PiKVM daemon.                                           #
 #                                                                            #
-#    Copyright (C) 2018  Maxim Devaev <mdevaev@gmail.com>                    #
+#    Copyright (C) 2018-2023  Maxim Devaev <mdevaev@gmail.com>               #
 #                                                                            #
 #    This program is free software: you can redistribute it and/or modify    #
 #    it under the terms of the GNU General Public License as published by    #
@@ -20,13 +20,11 @@
 # ========================================================================== #
 
 
-from typing import Optional
-
 from . import Hid
 
 
 # =====
-def make_keyboard_hid(report_id: Optional[int]=None) -> Hid:
+def make_keyboard_hid(report_id: (int | None)=None) -> Hid:
     return Hid(
         protocol=1,  # Keyboard protocol
         subclass=1,  # Boot interface subclass

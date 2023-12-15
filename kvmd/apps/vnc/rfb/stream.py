@@ -1,6 +1,6 @@
 # ========================================================================== #
 #                                                                            #
-#    KVMD - The main Pi-KVM daemon.                                          #
+#    KVMD - The main PiKVM daemon.                                           #
 #                                                                            #
 #    Copyright (C) 2020  Maxim Devaev <mdevaev@gmail.com>                    #
 #                                                                            #
@@ -24,8 +24,7 @@ import asyncio
 import ssl
 import struct
 
-from typing import Tuple
-from typing import Any
+from .... import aiotools
 
 from .errors import RfbConnectionError
 
@@ -33,18 +32,6 @@ from .errors import RfbConnectionError
 # =====
 def rfb_format_remote(writer: asyncio.StreamWriter) -> str:
     return "[%s]:%d" % (writer.transport.get_extra_info("peername")[:2])
-
-
-async def rfb_close_writer(writer: asyncio.StreamWriter) -> bool:
-    closing = writer.is_closing()
-    if not closing:
-        writer.transport.abort()  # type: ignore
-        writer.close()
-    try:
-        await writer.wait_closed()
-    except Exception:
-        pass
-    return (not closing)
 
 
 class RfbClientStream:
@@ -56,7 +43,7 @@ class RfbClientStream:
 
     # =====
 
-    async def _read_number(self, fmt: str) -> int:
+    async def _read_number(self, msg: str, fmt: str) -> int:
         assert len(fmt) == 1
         try:
             if fmt == "B":
@@ -65,51 +52,54 @@ class RfbClientStream:
                 fmt = f">{fmt}"
                 return struct.unpack(fmt, await self.__reader.readexactly(struct.calcsize(fmt)))[0]
         except (ConnectionError, asyncio.IncompleteReadError) as err:
-            raise RfbConnectionError(err)
+            raise RfbConnectionError(f"Can't read {msg}", err)
 
-    async def _read_struct(self, fmt: str) -> Tuple[int, ...]:
+    async def _read_struct(self, msg: str, fmt: str) -> tuple[int, ...]:
         assert len(fmt) > 1
         try:
             fmt = f">{fmt}"
             return struct.unpack(fmt, (await self.__reader.readexactly(struct.calcsize(fmt))))
         except (ConnectionError, asyncio.IncompleteReadError) as err:
-            raise RfbConnectionError(err)
+            raise RfbConnectionError(f"Can't read {msg}", err)
 
-    async def _read_text(self, length: int) -> str:
+    async def _read_text(self, msg: str, length: int) -> str:
         try:
             return (await self.__reader.readexactly(length)).decode("utf-8", errors="ignore")
         except (ConnectionError, asyncio.IncompleteReadError) as err:
-            raise RfbConnectionError(err)
+            raise RfbConnectionError(f"Can't read {msg}", err)
 
     # =====
 
-    async def _write_struct(self, fmt: str, *values: Any, drain: bool=True) -> None:
+    async def _write_struct(self, msg: str, fmt: str, *values: (int | bytes), drain: bool=True) -> None:
         try:
             if not fmt:
                 for value in values:
+                    assert isinstance(value, bytes)
                     self.__writer.write(value)
             elif fmt == "B":
                 assert len(values) == 1
+                assert isinstance(values[0], int)
                 self.__writer.write(bytes([values[0]]))
             else:
                 self.__writer.write(struct.pack(f">{fmt}", *values))
             if drain:
                 await self.__writer.drain()
         except ConnectionError as err:
-            raise RfbConnectionError(err)
+            raise RfbConnectionError(f"Can't write {msg}", err)
 
-    async def _write_reason(self, text: str, drain: bool=True) -> None:
+    async def _write_reason(self, msg: str, text: str, drain: bool=True) -> None:
         encoded = text.encode("utf-8", errors="ignore")
-        await self._write_struct("L", len(encoded), drain=False)
+        await self._write_struct(msg, "L", len(encoded), drain=False)
         try:
             self.__writer.write(encoded)
             if drain:
                 await self.__writer.drain()
         except ConnectionError as err:
-            raise RfbConnectionError(err)
+            raise RfbConnectionError(f"Can't write {msg}", err)
 
-    async def _write_fb_update(self, width: int, height: int, encoding: int, drain: bool=True) -> None:
+    async def _write_fb_update(self, msg: str, width: int, height: int, encoding: int, drain: bool=True) -> None:
         await self._write_struct(
+            msg,
             "BxH HH HH l",
             0,  # FB update
             1,  # Number of rects
@@ -125,17 +115,20 @@ class RfbClientStream:
         ssl_reader = asyncio.StreamReader()
         protocol = asyncio.StreamReaderProtocol(ssl_reader)
 
-        transport = await loop.start_tls(
-            self.__writer.transport,
-            protocol,
-            ssl_context,
-            server_side=True,
-            ssl_handshake_timeout=ssl_timeout,
-        )
+        try:
+            transport = await loop.start_tls(
+                self.__writer.transport,
+                protocol,
+                ssl_context,
+                server_side=True,
+                ssl_handshake_timeout=ssl_timeout,
+            )
+        except ConnectionError as err:
+            raise RfbConnectionError("Can't start TLS", err)
 
-        ssl_reader.set_transport(transport)
+        ssl_reader.set_transport(transport)  # type: ignore
         ssl_writer = asyncio.StreamWriter(
-            transport=transport,
+            transport=transport,  # type: ignore
             protocol=protocol,
             reader=ssl_reader,
             loop=loop,
@@ -145,4 +138,4 @@ class RfbClientStream:
         self.__writer = ssl_writer
 
     async def _close(self) -> None:
-        await rfb_close_writer(self.__writer)
+        await aiotools.close_writer(self.__writer)

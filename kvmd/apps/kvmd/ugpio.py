@@ -1,8 +1,8 @@
 # ========================================================================== #
 #                                                                            #
-#    KVMD - The main Pi-KVM daemon.                                          #
+#    KVMD - The main PiKVM daemon.                                           #
 #                                                                            #
-#    Copyright (C) 2018  Maxim Devaev <mdevaev@gmail.com>                    #
+#    Copyright (C) 2018-2023  Maxim Devaev <mdevaev@gmail.com>               #
 #                                                                            #
 #    This program is free software: you can redistribute it and/or modify    #
 #    it under the terms of the GNU General Public License as published by    #
@@ -22,14 +22,16 @@
 
 import asyncio
 
-from typing import List
-from typing import Dict
 from typing import AsyncGenerator
 from typing import Callable
-from typing import Optional
 from typing import Any
 
 from ...logging import get_logger
+
+from ...errors import IsBusyError
+
+from ... import tools
+from ... import aiotools
 
 from ...plugins.ugpio import GpioError
 from ...plugins.ugpio import GpioOperationError
@@ -38,12 +40,7 @@ from ...plugins.ugpio import UserGpioModes
 from ...plugins.ugpio import BaseUserGpioDriver
 from ...plugins.ugpio import get_ugpio_driver_class
 
-from ... import tools
-from ... import aiotools
-
 from ...yamlconf import Section
-
-from ...errors import IsBusyError
 
 
 # =====
@@ -77,13 +74,13 @@ class _GpioInput:
     ) -> None:
 
         self.__channel = channel
-        self.__pin: int = config.pin
+        self.__pin: str = str(config.pin)
         self.__inverted: bool = config.inverted
 
         self.__driver = driver
         self.__driver.register_input(self.__pin, config.debounce)
 
-    def get_scheme(self) -> Dict:
+    def get_scheme(self) -> dict:
         return {
             "hw": {
                 "driver": self.__driver.get_instance_id(),
@@ -91,10 +88,10 @@ class _GpioInput:
             },
         }
 
-    def get_state(self) -> Dict:
+    async def get_state(self) -> dict:
         (online, state) = (True, False)
         try:
-            state = (self.__driver.read(self.__pin) ^ self.__inverted)
+            state = (await self.__driver.read(self.__pin) ^ self.__inverted)
         except GpioDriverOfflineError:
             online = False
         return {
@@ -118,7 +115,7 @@ class _GpioOutput:  # pylint: disable=too-many-instance-attributes
     ) -> None:
 
         self.__channel = channel
-        self.__pin: int = config.pin
+        self.__pin: str = str(config.pin)
         self.__inverted: bool = config.inverted
 
         self.__switch: bool = config.switch
@@ -139,7 +136,10 @@ class _GpioOutput:  # pylint: disable=too-many-instance-attributes
 
         self.__region = aiotools.AioExclusiveRegion(GpioChannelIsBusyError, notifier)
 
-    def get_scheme(self) -> Dict:
+    def is_const(self) -> bool:
+        return (not self.__switch and not self.__pulse_delay)
+
+    def get_scheme(self) -> dict:
         return {
             "switch": self.__switch,
             "pulse": {
@@ -153,12 +153,12 @@ class _GpioOutput:  # pylint: disable=too-many-instance-attributes
             },
         }
 
-    def get_state(self) -> Dict:
+    async def get_state(self) -> dict:
         busy = self.__region.is_busy()
         (online, state) = (True, False)
         if not busy:
             try:
-                state = self.__read()
+                state = await self.__read()
             except GpioDriverOfflineError:
                 online = False
         return {
@@ -172,7 +172,7 @@ class _GpioOutput:  # pylint: disable=too-many-instance-attributes
             raise GpioSwitchNotSupported()
         await self.__run_action(wait, "switch", self.__inner_switch, state)
 
-    @aiotools.atomic
+    @aiotools.atomic_fg
     async def pulse(self, delay: float, wait: bool) -> None:
         if not self.__pulse_delay:
             raise GpioPulseNotSupported()
@@ -181,47 +181,47 @@ class _GpioOutput:  # pylint: disable=too-many-instance-attributes
 
     # =====
 
-    @aiotools.atomic
-    async def __run_action(self, wait: bool, name: str, method: Callable, *args: Any) -> None:
+    @aiotools.atomic_fg
+    async def __run_action(self, wait: bool, name: str, func: Callable, *args: Any) -> None:
         if wait:
             async with self.__region:
-                await method(*args)
+                await func(*args)
         else:
             await aiotools.run_region_task(
                 f"Can't perform {name} of {self} or operation was not completed",
-                self.__region, self.__action_task_wrapper, name, method, *args,
+                self.__region, self.__action_task_wrapper, name, func, *args,
             )
 
-    @aiotools.atomic
-    async def __action_task_wrapper(self, name: str, method: Callable, *args: Any) -> None:
+    @aiotools.atomic_fg
+    async def __action_task_wrapper(self, name: str, func: Callable, *args: Any) -> None:
         try:
-            return (await method(*args))
+            return (await func(*args))
         except GpioDriverOfflineError:
             get_logger(0).error("Can't perform %s of %s or operation was not completed: driver offline", name, self)
 
-    @aiotools.atomic
+    @aiotools.atomic_fg
     async def __inner_switch(self, state: bool) -> None:
-        self.__write(state)
+        await self.__write(state)
         get_logger(0).info("Ensured switch %s to state=%d", self, state)
         await asyncio.sleep(self.__busy_delay)
 
-    @aiotools.atomic
+    @aiotools.atomic_fg
     async def __inner_pulse(self, delay: float) -> None:
         try:
-            self.__write(True)
+            await self.__write(True)
             await asyncio.sleep(delay)
         finally:
-            self.__write(False)
+            await self.__write(False)
             await asyncio.sleep(self.__busy_delay)
         get_logger(0).info("Pulsed %s with delay=%.2f", self, delay)
 
     # =====
 
-    def __read(self) -> bool:
-        return (self.__driver.read(self.__pin) ^ self.__inverted)
+    async def __read(self) -> bool:
+        return (await self.__driver.read(self.__pin) ^ self.__inverted)
 
-    def __write(self, state: bool) -> None:
-        self.__driver.write(self.__pin, (state ^ self.__inverted))
+    async def __write(self, state: bool) -> None:
+        await self.__driver.write(self.__pin, (state ^ self.__inverted))
 
     def __str__(self) -> str:
         return f"Output({self.__channel}, driver={self.__driver}, pin={self.__pin})"
@@ -231,7 +231,7 @@ class _GpioOutput:  # pylint: disable=too-many-instance-attributes
 
 # =====
 class UserGpio:
-    def __init__(self, config: Section) -> None:
+    def __init__(self, config: Section, otg_config: Section) -> None:
         self.__view = config.view
 
         self.__notifier = aiotools.AioNotifier()
@@ -241,12 +241,13 @@ class UserGpio:
                 instance_name=driver,
                 notifier=self.__notifier,
                 **drv_config._unpack(ignore=["instance_name", "notifier", "type"]),
+                **({"otg_config": otg_config} if drv_config.type == "otgconf" else {}),  # Hack
             )
             for (driver, drv_config) in tools.sorted_kvs(config.drivers)
         }
 
-        self.__inputs: Dict[str, _GpioInput] = {}
-        self.__outputs: Dict[str, _GpioOutput] = {}
+        self.__inputs: dict[str, _GpioInput] = {}
+        self.__outputs: dict[str, _GpioOutput] = {}
 
         for (channel, ch_config) in tools.sorted_kvs(config.scheme):
             driver = self.__drivers[ch_config.driver]
@@ -255,23 +256,31 @@ class UserGpio:
             else:  # output:
                 self.__outputs[channel] = _GpioOutput(channel, ch_config, driver, self.__notifier)
 
-    async def get_model(self) -> Dict:
+    async def get_model(self) -> dict:
         return {
             "scheme": {
                 "inputs": {channel: gin.get_scheme() for (channel, gin) in self.__inputs.items()},
-                "outputs": {channel: gout.get_scheme() for (channel, gout) in self.__outputs.items()},
+                "outputs": {
+                    channel: gout.get_scheme()
+                    for (channel, gout) in self.__outputs.items()
+                    if not gout.is_const()
+                },
             },
             "view": self.__make_view(),
         }
 
-    async def get_state(self) -> Dict:
+    async def get_state(self) -> dict:
         return {
-            "inputs": {channel: gin.get_state() for (channel, gin) in self.__inputs.items()},
-            "outputs": {channel: gout.get_state() for (channel, gout) in self.__outputs.items()},
+            "inputs": {channel: await gin.get_state() for (channel, gin) in self.__inputs.items()},
+            "outputs": {
+                channel: await gout.get_state()
+                for (channel, gout) in self.__outputs.items()
+                if not gout.is_const()
+            },
         }
 
-    async def poll_state(self) -> AsyncGenerator[Dict, None]:
-        prev_state: Dict = {}
+    async def poll_state(self) -> AsyncGenerator[dict, None]:
+        prev_state: dict = {}
         while True:
             state = await self.get_state()
             if state != prev_state:
@@ -280,7 +289,7 @@ class UserGpio:
             await self.__notifier.wait()
 
     def sysprep(self) -> None:
-        get_logger().info("Preparing User-GPIO drivers ...")
+        get_logger(0).info("Preparing User-GPIO drivers ...")
         for (_, driver) in tools.sorted_kvs(self.__drivers):
             driver.prepare()
 
@@ -294,7 +303,7 @@ class UserGpio:
     async def cleanup(self) -> None:
         for driver in self.__drivers.values():
             try:
-                driver.cleanup()
+                await driver.cleanup()
             except Exception:
                 get_logger().exception("Can't cleanup driver %s", driver)
 
@@ -312,39 +321,55 @@ class UserGpio:
 
     # =====
 
-    def __make_view(self) -> Dict:
-        table: List[Optional[List[Dict]]] = []
+    def __make_view(self) -> dict:
+        return {
+            "header": {"title": self.__make_view_title()},
+            "table": self.__make_view_table(),
+        }
+
+    def __make_view_title(self) -> list[dict]:
+        raw_title = self.__view["header"]["title"]
+        title: list[dict] = []
+        if isinstance(raw_title, list):
+            for item in raw_title:
+                if item.startswith("#") or len(item) == 0:
+                    title.append(self.__make_item_label(item))
+                else:
+                    parts = list(map(str.strip, item.split("|", 2)))
+                    if parts and parts[0] in self.__inputs:
+                        title.append(self.__make_item_input(parts))
+        else:
+            title.append(self.__make_item_label(f"#{raw_title}"))
+        return title
+
+    def __make_view_table(self) -> list[list[dict] | None]:
+        table: list[list[dict] | None] = []
         for row in self.__view["table"]:
             if len(row) == 0:
                 table.append(None)
                 continue
 
-            items: List[Dict] = []
+            items: list[dict] = []
             for item in map(str.strip, row):
                 if item.startswith("#") or len(item) == 0:
-                    items.append(self.__make_view_label(item))
+                    items.append(self.__make_item_label(item))
                 else:
                     parts = list(map(str.strip, item.split("|", 2)))
                     if parts:
                         if parts[0] in self.__inputs:
-                            items.append(self.__make_view_input(parts))
+                            items.append(self.__make_item_input(parts))
                         elif parts[0] in self.__outputs:
-                            items.append(self.__make_view_output(parts))
+                            items.append(self.__make_item_output(parts))
             table.append(items)
+        return table
 
-        return {
-            "header": self.__view["header"],
-            "table": table,
-        }
-
-    def __make_view_label(self, item: str) -> Dict:
-        assert item.startswith("#")
+    def __make_item_label(self, item: str) -> dict:
         return {
             "type": "label",
             "text": item[1:].strip(),
         }
 
-    def __make_view_input(self, parts: List[str]) -> Dict:
+    def __make_item_input(self, parts: list[str]) -> dict:
         assert len(parts) >= 1
         color = (parts[1] if len(parts) > 1 else None)
         if color not in ["green", "yellow", "red"]:
@@ -355,7 +380,7 @@ class UserGpio:
             "color": color,
         }
 
-    def __make_view_output(self, parts: List[str]) -> Dict:
+    def __make_item_output(self, parts: list[str]) -> dict:
         assert len(parts) >= 1
         confirm = False
         text = "Click"

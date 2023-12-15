@@ -1,8 +1,8 @@
 # ========================================================================== #
 #                                                                            #
-#    KVMD - The main Pi-KVM daemon.                                          #
+#    KVMD - The main PiKVM daemon.                                           #
 #                                                                            #
-#    Copyright (C) 2018  Maxim Devaev <mdevaev@gmail.com>                    #
+#    Copyright (C) 2018-2023  Maxim Devaev <mdevaev@gmail.com>               #
 #                                                                            #
 #    This program is free software: you can redistribute it and/or modify    #
 #    it under the terms of the GNU General Public License as published by    #
@@ -25,16 +25,16 @@ import base64
 from aiohttp.web import Request
 from aiohttp.web import Response
 
+from ....htserver import UnauthorizedError
+from ....htserver import ForbiddenError
+from ....htserver import HttpExposed
+from ....htserver import exposed_http
+from ....htserver import make_json_response
+from ....htserver import set_request_auth_info
+
 from ....validators.auth import valid_user
 from ....validators.auth import valid_passwd
 from ....validators.auth import valid_auth_token
-
-from ..http import UnauthorizedError
-from ..http import ForbiddenError
-from ..http import HttpExposed
-from ..http import exposed_http
-from ..http import make_json_response
-from ..http import set_request_auth_info
 
 from ..auth import AuthManager
 
@@ -44,7 +44,7 @@ _COOKIE_AUTH_TOKEN = "auth_token"
 
 
 async def check_request_auth(auth_manager: AuthManager, exposed: HttpExposed, request: Request) -> None:
-    if exposed.auth_required and auth_manager.is_auth_enabled():
+    if auth_manager.is_auth_required(exposed):
         user = request.headers.get("X-KVMD-User", "")
         if user:
             user = valid_user(user)

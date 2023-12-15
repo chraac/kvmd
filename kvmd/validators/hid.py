@@ -1,8 +1,8 @@
 # ========================================================================== #
 #                                                                            #
-#    KVMD - The main Pi-KVM daemon.                                          #
+#    KVMD - The main PiKVM daemon.                                           #
 #                                                                            #
-#    Copyright (C) 2018  Maxim Devaev <mdevaev@gmail.com>                    #
+#    Copyright (C) 2018-2023  Maxim Devaev <mdevaev@gmail.com>               #
 #                                                                            #
 #    This program is free software: you can redistribute it and/or modify    #
 #    it under the terms of the GNU General Public License as published by    #
@@ -24,6 +24,8 @@ from typing import Any
 
 from ..keyboard.mappings import KEYMAP
 
+from ..mouse import MouseRange
+
 from . import check_string_in_list
 
 from .basic import valid_number
@@ -31,11 +33,11 @@ from .basic import valid_number
 
 # =====
 def valid_hid_keyboard_output(arg: Any) -> str:
-    return check_string_in_list(arg, "Keyboard output", ["usb", "ps2", ""])
+    return check_string_in_list(arg, "Keyboard output", ["usb", "ps2", "disabled"])
 
 
 def valid_hid_mouse_output(arg: Any) -> str:
-    return check_string_in_list(arg, "Mouse output", ["usb", "usb_rel", "ps2", ""])
+    return check_string_in_list(arg, "Mouse output", ["usb", "usb_win98", "usb_rel", "ps2", "disabled"])
 
 
 def valid_hid_key(arg: Any) -> str:
@@ -44,7 +46,7 @@ def valid_hid_key(arg: Any) -> str:
 
 def valid_hid_mouse_move(arg: Any) -> int:
     arg = valid_number(arg, name="Mouse move")
-    return min(max(-32768, arg), 32767)
+    return min(max(MouseRange.MIN, arg), MouseRange.MAX)
 
 
 def valid_hid_mouse_button(arg: Any) -> str:

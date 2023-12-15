@@ -1,4 +1,4 @@
--include testenv/config.mk
+-include config.mk
 
 TESTENV_IMAGE ?= kvmd-testenv
 TESTENV_HID ?= /dev/ttyS10
@@ -6,11 +6,13 @@ TESTENV_VIDEO ?= /dev/video0
 TESTENV_GPIO ?= /dev/gpiochip0
 TESTENV_RELAY ?= $(if $(shell ls /dev/hidraw0 2>/dev/null || true),/dev/hidraw0,)
 
-LIBGPIOD_VERSION ?= 1.5.2
+LIBGPIOD_VERSION ?= 1.6.3
 
 USTREAMER_MIN_VERSION ?= $(shell grep -o 'ustreamer>=[^"]\+' PKGBUILD | sed 's/ustreamer>=//g')
 
 DEFAULT_PLATFORM ?= v2-hdmi-rpi4
+
+DOCKER ?= docker
 
 
 # =====
@@ -45,17 +47,32 @@ all:
 
 
 testenv:
-	docker build \
+	$(DOCKER) build \
 			$(if $(call optbool,$(NC)),--no-cache,) \
 			--rm \
 			--tag $(TESTENV_IMAGE) \
 			--build-arg LIBGPIOD_VERSION=$(LIBGPIOD_VERSION) \
 			--build-arg USTREAMER_MIN_VERSION=$(USTREAMER_MIN_VERSION) \
 		-f testenv/Dockerfile .
+	test -d testenv/.ssl || $(DOCKER) run --rm \
+			--volume `pwd`:/src:ro \
+			--volume `pwd`/testenv:/src/testenv:rw \
+		-t $(TESTENV_IMAGE) bash -c " \
+			groupadd kvmd-nginx \
+			&& groupadd kvmd-vnc \
+			&& /src/scripts/kvmd-gencert --do-the-thing \
+			&& /src/scripts/kvmd-gencert --do-the-thing --vnc \
+			&& chown -R root:root /etc/kvmd/{nginx,vnc}/ssl \
+			&& chmod 664 /etc/kvmd/{nginx,vnc}/ssl/* \
+			&& chmod 775 /etc/kvmd/{nginx,vnc}/ssl \
+			&& mkdir /src/testenv/.ssl \
+			&& mv /etc/kvmd/nginx/ssl /src/testenv/.ssl/nginx \
+			&& mv /etc/kvmd/vnc/ssl /src/testenv/.ssl/vnc \
+		"
 
 
 tox: testenv
-	time docker run --rm \
+	time $(DOCKER) run --rm \
 			--volume `pwd`:/src:ro \
 			--volume `pwd`/testenv:/src/testenv:rw \
 			--volume `pwd`/testenv/tests:/src/testenv/tests:ro \
@@ -63,9 +80,13 @@ tox: testenv
 			--volume `pwd`/configs:/usr/share/kvmd/configs.default:ro \
 			--volume `pwd`/contrib/keymaps:/usr/share/kvmd/keymaps:ro \
 		-t $(TESTENV_IMAGE) bash -c " \
-			cp /usr/share/kvmd/configs.default/kvmd/*.yaml /etc/kvmd \
+			cp -a /src/testenv/.ssl/nginx /etc/kvmd/nginx/ssl \
+			&& cp -a /src/testenv/.ssl/vnc /etc/kvmd/vnc/ssl \
+			&& cp /usr/share/kvmd/configs.default/kvmd/*.yaml /etc/kvmd \
 			&& cp /usr/share/kvmd/configs.default/kvmd/*passwd /etc/kvmd \
+			&& cp /usr/share/kvmd/configs.default/kvmd/*.secret /etc/kvmd \
 			&& cp /usr/share/kvmd/configs.default/kvmd/main/$(if $(P),$(P),$(DEFAULT_PLATFORM)).yaml /etc/kvmd/main.yaml \
+			&& mkdir -p /etc/kvmd/override.d \
 			&& cp /src/testenv/$(if $(P),$(P),$(DEFAULT_PLATFORM)).override.yaml /etc/kvmd/override.yaml \
 			&& cd /src \
 			&& $(if $(CMD),$(CMD),tox -q -c testenv/tox.ini $(if $(E),-e $(E),-p auto)) \
@@ -79,54 +100,46 @@ $(TESTENV_GPIO):
 
 
 run: testenv $(TESTENV_GPIO)
-	test -d testenv/.ssl || docker run --rm \
-			--volume `pwd`:/src:ro \
-			--volume `pwd`/testenv:/src/testenv:rw \
-		-t $(TESTENV_IMAGE) bash -c " \
-			groupadd kvmd-nginx \
-			&& /src/scripts/kvmd-gencert --do-the-thing \
-			&& chown -R root:root /etc/kvmd/nginx/ssl \
-			&& chmod 664 /etc/kvmd/nginx/ssl/* \
-			&& chmod 775 /etc/kvmd/nginx/ssl \
-			&& mv /etc/kvmd/nginx/ssl /src/testenv/.ssl \
-		"
-	- docker run --rm --name kvmd \
-			--cap-add SYS_ADMIN \
+	- $(DOCKER) run --rm --name kvmd \
+			--privileged \
 			--volume `pwd`/testenv/run:/run/kvmd:rw \
 			--volume `pwd`/testenv:/testenv:ro \
 			--volume `pwd`/kvmd:/kvmd:ro \
+			--volume `pwd`/testenv/env.py:/kvmd/env.py:ro \
 			--volume `pwd`/web:/usr/share/kvmd/web:ro \
 			--volume `pwd`/extras:/usr/share/kvmd/extras:ro \
 			--volume `pwd`/configs:/usr/share/kvmd/configs.default:ro \
 			--volume `pwd`/contrib/keymaps:/usr/share/kvmd/keymaps:ro \
 			--device $(TESTENV_VIDEO):$(TESTENV_VIDEO) \
 			--device $(TESTENV_GPIO):$(TESTENV_GPIO) \
-			--env KVMD_GPIO_DEVICE_PATH=$(TESTENV_GPIO) \
-			--env KVMD_SYSFS_PREFIX=/fake_sysfs \
-			--env KVMD_PROCFS_PREFIX=/fake_procfs \
 			$(if $(TESTENV_RELAY),--device $(TESTENV_RELAY):$(TESTENV_RELAY),) \
 			--publish 8080:80/tcp \
 			--publish 4430:443/tcp \
 		-it $(TESTENV_IMAGE) /bin/bash -c " \
-			mount -t debugfs none /sys/kernel/debug \
-			&& test -d /sys/kernel/debug/gpio-mockup/`basename $(TESTENV_GPIO)`/ \
+			mkdir -p /tmp/kvmd-nginx \
+			&& mount -t debugfs none /sys/kernel/debug \
+			&& test -d /sys/kernel/debug/gpio-mockup/`basename $(TESTENV_GPIO)`/ || (echo \"Missing GPIO mockup\" && exit 1) \
 			&& (socat PTY,link=$(TESTENV_HID) PTY,link=/dev/ttyS11 &) \
 			&& cp -r /usr/share/kvmd/configs.default/nginx/* /etc/kvmd/nginx \
-			&& sed -i '$$ s/.$$//' /etc/kvmd/nginx/nginx.conf \
-			&& cat testenv/nginx.append.conf >> /etc/kvmd/nginx/nginx.conf \
-			&& cp -a /testenv/.ssl /etc/kvmd/nginx/ssl \
+			&& cp testenv/redirect-to-https.conf /etc/kvmd/nginx \
+			&& cp -a /testenv/.ssl/nginx /etc/kvmd/nginx/ssl \
+			&& cp -a /testenv/.ssl/vnc /etc/kvmd/vnc/ssl \
 			&& cp /usr/share/kvmd/configs.default/kvmd/*.yaml /etc/kvmd \
 			&& cp /usr/share/kvmd/configs.default/kvmd/*passwd /etc/kvmd \
+			&& cp /usr/share/kvmd/configs.default/kvmd/*.secret /etc/kvmd \
 			&& cp /usr/share/kvmd/configs.default/kvmd/main/$(if $(P),$(P),$(DEFAULT_PLATFORM)).yaml /etc/kvmd/main.yaml \
+			&& ln -s /testenv/web.css /etc/kvmd/web.css \
+			&& mkdir -p /etc/kvmd/override.d \
 			&& cp /testenv/$(if $(P),$(P),$(DEFAULT_PLATFORM)).override.yaml /etc/kvmd/override.yaml \
 			&& nginx -c /etc/kvmd/nginx/nginx.conf -g 'user http; error_log stderr;' \
 			&& ln -s $(TESTENV_VIDEO) /dev/kvmd-video \
+			&& ln -s $(TESTENV_GPIO) /dev/kvmd-gpio \
 			&& $(if $(CMD),$(CMD),python -m kvmd.apps.kvmd --run) \
 		"
 
 
 run-cfg: testenv
-	- docker run --rm --name kvmd-cfg \
+	- $(DOCKER) run --rm --name kvmd-cfg \
 			--volume `pwd`/testenv/run:/run/kvmd:rw \
 			--volume `pwd`/testenv:/testenv:ro \
 			--volume `pwd`/kvmd:/kvmd:ro \
@@ -134,16 +147,20 @@ run-cfg: testenv
 			--volume `pwd`/configs:/usr/share/kvmd/configs.default:ro \
 			--volume `pwd`/contrib/keymaps:/usr/share/kvmd/keymaps:ro \
 		-it $(TESTENV_IMAGE) /bin/bash -c " \
-			cp /usr/share/kvmd/configs.default/kvmd/*.yaml /etc/kvmd \
+			cp -a /testenv/.ssl/nginx /etc/kvmd/nginx/ssl \
+			&& cp -a /testenv/.ssl/vnc /etc/kvmd/vnc/ssl \
+			&& cp /usr/share/kvmd/configs.default/kvmd/*.yaml /etc/kvmd \
 			&& cp /usr/share/kvmd/configs.default/kvmd/*passwd /etc/kvmd \
+			&& cp /usr/share/kvmd/configs.default/kvmd/*.secret /etc/kvmd \
 			&& cp /usr/share/kvmd/configs.default/kvmd/main/$(if $(P),$(P),$(DEFAULT_PLATFORM)).yaml /etc/kvmd/main.yaml \
+			&& mkdir -p /etc/kvmd/override.d \
 			&& cp /testenv/$(if $(P),$(P),$(DEFAULT_PLATFORM)).override.yaml /etc/kvmd/override.yaml \
 			&& $(if $(CMD),$(CMD),python -m kvmd.apps.kvmd -m) \
 		"
 
 
 run-ipmi: testenv
-	- docker run --rm --name kvmd-ipmi \
+	- $(DOCKER) run --rm --name kvmd-ipmi \
 			--volume `pwd`/testenv/run:/run/kvmd:rw \
 			--volume `pwd`/testenv:/testenv:ro \
 			--volume `pwd`/kvmd:/kvmd:ro \
@@ -152,16 +169,20 @@ run-ipmi: testenv
 			--volume `pwd`/contrib/keymaps:/usr/share/kvmd/keymaps:ro \
 			--publish 6230:623/udp \
 		-it $(TESTENV_IMAGE) /bin/bash -c " \
-			cp /usr/share/kvmd/configs.default/kvmd/*.yaml /etc/kvmd \
+			cp -a /testenv/.ssl/nginx /etc/kvmd/nginx/ssl \
+			&& cp -a /testenv/.ssl/vnc /etc/kvmd/vnc/ssl \
+			&& cp /usr/share/kvmd/configs.default/kvmd/*.yaml /etc/kvmd \
 			&& cp /usr/share/kvmd/configs.default/kvmd/*passwd /etc/kvmd \
+			&& cp /usr/share/kvmd/configs.default/kvmd/*.secret /etc/kvmd \
 			&& cp /usr/share/kvmd/configs.default/kvmd/main/$(if $(P),$(P),$(DEFAULT_PLATFORM)).yaml /etc/kvmd/main.yaml \
+			&& mkdir -p /etc/kvmd/override.d \
 			&& cp /testenv/$(if $(P),$(P),$(DEFAULT_PLATFORM)).override.yaml /etc/kvmd/override.yaml \
 			&& $(if $(CMD),$(CMD),python -m kvmd.apps.ipmi --run) \
 		"
 
 
 run-vnc: testenv
-	- docker run --rm --name kvmd-vnc \
+	- $(DOCKER) run --rm --name kvmd-vnc \
 			--volume `pwd`/testenv/run:/run/kvmd:rw \
 			--volume `pwd`/testenv:/testenv:ro \
 			--volume `pwd`/kvmd:/kvmd:ro \
@@ -170,9 +191,13 @@ run-vnc: testenv
 			--volume `pwd`/contrib/keymaps:/usr/share/kvmd/keymaps:ro \
 			--publish 5900:5900/tcp \
 		-it $(TESTENV_IMAGE) /bin/bash -c " \
-			cp /usr/share/kvmd/configs.default/kvmd/*.yaml /etc/kvmd \
+			cp -a /testenv/.ssl/nginx /etc/kvmd/nginx/ssl \
+			&& cp -a /testenv/.ssl/vnc /etc/kvmd/vnc/ssl \
+			&& cp /usr/share/kvmd/configs.default/kvmd/*.yaml /etc/kvmd \
 			&& cp /usr/share/kvmd/configs.default/kvmd/*passwd /etc/kvmd \
+			&& cp /usr/share/kvmd/configs.default/kvmd/*.secret /etc/kvmd \
 			&& cp /usr/share/kvmd/configs.default/kvmd/main/$(if $(P),$(P),$(DEFAULT_PLATFORM)).yaml /etc/kvmd/main.yaml \
+			&& mkdir -p /etc/kvmd/override.d \
 			&& cp /testenv/$(if $(P),$(P),$(DEFAULT_PLATFORM)).override.yaml /etc/kvmd/override.yaml \
 			&& $(if $(CMD),$(CMD),python -m kvmd.apps.vnc --run) \
 		"
@@ -182,17 +207,18 @@ regen: keymap pug
 
 
 keymap: testenv
-	docker run --user `id -u`:`id -g` --rm \
+	$(DOCKER) run --user `id -u`:`id -g` --rm \
 		--volume `pwd`:/src \
 	-it $(TESTENV_IMAGE) bash -c "cd src \
 		&& ./genmap.py keymap.csv kvmd/keyboard/mappings.py.mako kvmd/keyboard/mappings.py \
-		&& ./genmap.py keymap.csv hid/src/usb/keymap.h.mako hid/src/usb/keymap.h \
-		&& ./genmap.py keymap.csv hid/src/ps2/keymap.h.mako hid/src/ps2/keymap.h \
+		&& ./genmap.py keymap.csv hid/arduino/lib/drivers/usb-keymap.h.mako hid/arduino/lib/drivers/usb-keymap.h \
+		&& ./genmap.py keymap.csv hid/arduino/lib/drivers-avr/ps2/keymap.h.mako hid/arduino/lib/drivers-avr/ps2/keymap.h \
+		&& ./genmap.py keymap.csv hid/pico/src/ph_usb_keymap.h.mako hid/pico/src/ph_usb_keymap.h \
 	"
 
 
 pug: testenv
-	docker run --user `id -u`:`id -g` --rm \
+	$(DOCKER) run --user `id -u`:`id -g` --rm \
 		--volume `pwd`:/src \
 	-it $(TESTENV_IMAGE) bash -c "cd src \
 		&& pug --pretty web/index.pug -o web \
@@ -225,11 +251,14 @@ push:
 clean:
 	rm -rf testenv/run/*.{pid,sock} build site dist pkg src v*.tar.gz *.pkg.tar.{xz,zst} *.egg-info kvmd-*.tar.gz
 	find kvmd testenv/tests -name __pycache__ | xargs rm -rf
-	make -C hid clean
+	make -C hid/arduino clean
+	make -C hid/pico clean
 
 
 clean-all: testenv clean
-	- docker run --rm \
+	make -C hid/arduino clean-all
+	make -C hid/pico clean-all
+	- $(DOCKER) run --rm \
 			--volume `pwd`:/src \
 		-it $(TESTENV_IMAGE) bash -c "cd src && rm -rf testenv/{.ssl,.tox,.mypy_cache,.coverage}"
 

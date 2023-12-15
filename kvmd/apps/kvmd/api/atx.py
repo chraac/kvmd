@@ -1,8 +1,8 @@
 # ========================================================================== #
 #                                                                            #
-#    KVMD - The main Pi-KVM daemon.                                          #
+#    KVMD - The main PiKVM daemon.                                           #
 #                                                                            #
-#    Copyright (C) 2018  Maxim Devaev <mdevaev@gmail.com>                    #
+#    Copyright (C) 2018-2023  Maxim Devaev <mdevaev@gmail.com>               #
 #                                                                            #
 #    This program is free software: you can redistribute it and/or modify    #
 #    it under the terms of the GNU General Public License as published by    #
@@ -23,14 +23,14 @@
 from aiohttp.web import Request
 from aiohttp.web import Response
 
+from ....htserver import exposed_http
+from ....htserver import make_json_response
+
 from ....plugins.atx import BaseAtx
 
 from ....validators.basic import valid_bool
 from ....validators.kvm import valid_atx_power_action
 from ....validators.kvm import valid_atx_button
-
-from ..http import exposed_http
-from ..http import make_json_response
 
 
 # =====
@@ -47,7 +47,7 @@ class AtxApi:
     @exposed_http("POST", "/atx/power")
     async def __power_handler(self, request: Request) -> Response:
         action = valid_atx_power_action(request.query.get("action"))
-        wait = valid_bool(request.query.get("wait", "0"))
+        wait = valid_bool(request.query.get("wait", False))
         await ({
             "on": self.__atx.power_on,
             "off": self.__atx.power_off,
@@ -59,7 +59,7 @@ class AtxApi:
     @exposed_http("POST", "/atx/click")
     async def __click_handler(self, request: Request) -> Response:
         button = valid_atx_button(request.query.get("button"))
-        wait = valid_bool(request.query.get("wait", "0"))
+        wait = valid_bool(request.query.get("wait", False))
         await ({
             "power": self.__atx.click_power,
             "power_long": self.__atx.click_power_long,

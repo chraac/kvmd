@@ -1,8 +1,8 @@
 # ========================================================================== #
 #                                                                            #
-#    KVMD - The main Pi-KVM daemon.                                          #
+#    KVMD - The main PiKVM daemon.                                           #
 #                                                                            #
-#    Copyright (C) 2018  Maxim Devaev <mdevaev@gmail.com>                    #
+#    Copyright (C) 2018-2023  Maxim Devaev <mdevaev@gmail.com>               #
 #                                                                            #
 #    This program is free software: you can redistribute it and/or modify    #
 #    it under the terms of the GNU General Public License as published by    #
@@ -20,8 +20,9 @@
 # ========================================================================== #
 
 
-from typing import Tuple
-from typing import Dict
+import ctypes
+import ctypes.util
+
 from typing import Generator
 
 from .keysym import SymmapModifiers
@@ -29,44 +30,89 @@ from .mappings import WebModifiers
 
 
 # =====
-def text_to_web_keys(
+def _load_libxkbcommon() -> ctypes.CDLL:
+    path = ctypes.util.find_library("xkbcommon")
+    if not path:
+        raise RuntimeError("Where is libxkbcommon?")
+    assert path
+    lib = ctypes.CDLL(path)
+    for (name, restype, argtypes) in [
+        ("xkb_utf32_to_keysym", ctypes.c_uint32, [ctypes.c_uint32]),
+    ]:
+        func = getattr(lib, name)
+        if not func:
+            raise RuntimeError(f"Where is libc.{name}?")
+        setattr(func, "restype", restype)
+        setattr(func, "argtypes", argtypes)
+    return lib
+
+
+_libxkbcommon = _load_libxkbcommon()
+
+
+def _ch_to_keysym(ch: str) -> int:
+    assert len(ch) == 1
+    return _libxkbcommon.xkb_utf32_to_keysym(ord(ch))
+
+
+# =====
+def text_to_web_keys(  # pylint: disable=too-many-branches
     text: str,
-    symmap: Dict[int, Dict[int, str]],
-    shift_key: str=WebModifiers.SHIFT_LEFT,
-) -> Generator[Tuple[str, bool], None, None]:
+    symmap: dict[int, dict[int, str]],
+) -> Generator[tuple[str, bool], None, None]:
 
-    assert shift_key in WebModifiers.SHIFTS
+    shift = False
+    altgr = False
 
-    shifted = False
     for ch in text:
-        try:
-            code = ord(ch)
-            if 0x20 <= code <= 0x7E:
-                # https://stackoverflow.com/questions/12343987/convert-ascii-character-to-x11-keycode
-                # https://www.ascii-code.com
-                keys = symmap[code]
-            elif code == 0x0A:  # Enter:
-                keys = {0: "Enter"}
-            else:
+        # https://stackoverflow.com/questions/12343987/convert-ascii-character-to-x11-keycode
+        # https://www.ascii-code.com
+        if ch == "\n":
+            keys = {0: "Enter"}
+        elif ch == "\t":
+            keys = {0: "Tab"}
+        elif ch == " ":
+            keys = {0: "Space"}
+        else:
+            if ch in ["‚", "‘", "’"]:
+                ch = "'"
+            elif ch in ["„", "“", "”"]:
+                ch = "\""
+            elif ch == "–":  # Short
+                ch = "-"
+            elif ch == "—":  # Long
+                ch = "--"
+            if not ch.isprintable():
                 continue
-        except Exception:
-            continue
+            try:
+                keys = symmap[_ch_to_keysym(ch)]
+            except Exception:
+                continue
 
-        for (modifiers, key) in reversed(keys.items()):
-            if (modifiers & SymmapModifiers.ALTGR) or (modifiers & SymmapModifiers.CTRL):
+        for (modifiers, key) in keys.items():
+            if modifiers & SymmapModifiers.CTRL:
                 # Not supported yet
                 continue
 
-            if modifiers & SymmapModifiers.SHIFT and not shifted:
-                yield (shift_key, True)
-                shifted = True
-            elif not (modifiers & SymmapModifiers.SHIFT) and shifted:
-                yield (shift_key, False)
-                shifted = False
+            if modifiers & SymmapModifiers.SHIFT and not shift:
+                yield (WebModifiers.SHIFT_LEFT, True)
+                shift = True
+            elif not (modifiers & SymmapModifiers.SHIFT) and shift:
+                yield (WebModifiers.SHIFT_LEFT, False)
+                shift = False
+
+            if modifiers & SymmapModifiers.ALTGR and not altgr:
+                yield (WebModifiers.ALT_RIGHT, True)
+                altgr = True
+            elif not (modifiers & SymmapModifiers.ALTGR) and altgr:
+                yield (WebModifiers.ALT_RIGHT, False)
+                altgr = False
 
             yield (key, True)
             yield (key, False)
             break
 
-    if shifted:
-        yield (shift_key, False)
+    if shift:
+        yield (WebModifiers.SHIFT_LEFT, False)
+    if altgr:
+        yield (WebModifiers.ALT_RIGHT, False)

@@ -1,8 +1,8 @@
 # ========================================================================== #
 #                                                                            #
-#    KVMD - The main Pi-KVM daemon.                                          #
+#    KVMD - The main PiKVM daemon.                                           #
 #                                                                            #
-#    Copyright (C) 2018  Maxim Devaev <mdevaev@gmail.com>                    #
+#    Copyright (C) 2018-2023  Maxim Devaev <mdevaev@gmail.com>               #
 #                                                                            #
 #    This program is free software: you can redistribute it and/or modify    #
 #    it under the terms of the GNU General Public License as published by    #
@@ -22,17 +22,15 @@
 
 import asyncio
 
-from typing import List
-
 from aiohttp.web import Request
 from aiohttp.web import Response
+
+from ....htserver import exposed_http
+from ....htserver import make_json_response
 
 from ....validators.kvm import valid_info_fields
 
 from ..info import InfoManager
-
-from ..http import exposed_http
-from ..http import make_json_response
 
 
 # =====
@@ -51,7 +49,7 @@ class InfoApi:
         ])))
         return make_json_response(results)
 
-    def __valid_info_fields(self, request: Request) -> List[str]:
+    def __valid_info_fields(self, request: Request) -> list[str]:
         subs = self.__info_manager.get_subs()
         return sorted(valid_info_fields(
             arg=request.query.get("fields", ",".join(subs)),

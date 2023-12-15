@@ -1,8 +1,8 @@
 # ========================================================================== #
 #                                                                            #
-#    KVMD - The main Pi-KVM daemon.                                          #
+#    KVMD - The main PiKVM daemon.                                           #
 #                                                                            #
-#    Copyright (C) 2018  Maxim Devaev <mdevaev@gmail.com>                    #
+#    Copyright (C) 2018-2023  Maxim Devaev <mdevaev@gmail.com>               #
 #                                                                            #
 #    This program is free software: you can redistribute it and/or modify    #
 #    it under the terms of the GNU General Public License as published by    #
@@ -23,10 +23,7 @@
 import os
 import contextlib
 
-from typing import List
-from typing import Dict
 from typing import AsyncGenerator
-from typing import Optional
 
 import passlib.apache
 
@@ -38,9 +35,16 @@ from kvmd.apps.kvmd.auth import AuthManager
 
 from kvmd.plugins.auth import get_auth_service_class
 
+from kvmd.htserver import HttpExposed
+
 
 # =====
-def _make_service_kwargs(path: str) -> Dict:
+_E_AUTH = HttpExposed("GET", "/foo_auth", True, (lambda: None))
+_E_UNAUTH = HttpExposed("GET", "/bar_unauth", True, (lambda: None))
+_E_FREE = HttpExposed("GET", "/baz_free", False, (lambda: None))
+
+
+def _make_service_kwargs(path: str) -> dict:
     cls = get_auth_service_class("htpasswd")
     scheme = cls.get_plugin_options()
     return make_config({"file": path}, scheme)._unpack()
@@ -48,18 +52,24 @@ def _make_service_kwargs(path: str) -> Dict:
 
 @contextlib.asynccontextmanager
 async def _get_configured_manager(
+    unauth_paths: list[str],
     internal_path: str,
     external_path: str="",
-    force_internal_users: Optional[List[str]]=None,
+    force_internal_users: (list[str] | None)=None,
 ) -> AsyncGenerator[AuthManager, None]:
 
     manager = AuthManager(
+        enabled=True,
+        unauth_paths=unauth_paths,
+
         internal_type="htpasswd",
         internal_kwargs=_make_service_kwargs(internal_path),
+        force_internal_users=(force_internal_users or []),
+
         external_type=("htpasswd" if external_path else ""),
         external_kwargs=(_make_service_kwargs(external_path) if external_path else {}),
-        force_internal_users=(force_internal_users or []),
-        enabled=True,
+
+        totp_secret_path="",
     )
 
     try:
@@ -77,8 +87,11 @@ async def test_ok__internal(tmpdir) -> None:  # type: ignore
     htpasswd.set_password("admin", "pass")
     htpasswd.save()
 
-    async with _get_configured_manager(path) as manager:
+    async with _get_configured_manager([], path) as manager:
         assert manager.is_auth_enabled()
+        assert manager.is_auth_required(_E_AUTH)
+        assert manager.is_auth_required(_E_UNAUTH)
+        assert not manager.is_auth_required(_E_FREE)
 
         assert manager.check("xxx") is None
         manager.logout("xxx")
@@ -117,8 +130,11 @@ async def test_ok__external(tmpdir) -> None:  # type: ignore
     htpasswd2.set_password("user", "foobar")
     htpasswd2.save()
 
-    async with _get_configured_manager(path1, path2, ["admin"]) as manager:
+    async with _get_configured_manager([], path1, path2, ["admin"]) as manager:
         assert manager.is_auth_enabled()
+        assert manager.is_auth_required(_E_AUTH)
+        assert manager.is_auth_required(_E_UNAUTH)
+        assert not manager.is_auth_required(_E_FREE)
 
         assert (await manager.login("local", "foobar")) is None
         assert (await manager.login("admin", "pass2")) is None
@@ -139,18 +155,47 @@ async def test_ok__external(tmpdir) -> None:  # type: ignore
 
 
 @pytest.mark.asyncio
+async def test_ok__unauth(tmpdir) -> None:  # type: ignore
+    path = os.path.abspath(str(tmpdir.join("htpasswd")))
+
+    htpasswd = passlib.apache.HtpasswdFile(path, new=True)
+    htpasswd.set_password("admin", "pass")
+    htpasswd.save()
+
+    async with _get_configured_manager([
+        "", " ",
+        "foo_auth", "/foo_auth ", " /foo_auth",
+        "/foo_authx", "/foo_auth/", "/foo_auth/x",
+        "/bar_unauth",  # Only this one is matching
+    ], path) as manager:
+
+        assert manager.is_auth_enabled()
+        assert manager.is_auth_required(_E_AUTH)
+        assert not manager.is_auth_required(_E_UNAUTH)
+        assert not manager.is_auth_required(_E_FREE)
+
+
+@pytest.mark.asyncio
 async def test_ok__disabled() -> None:
     try:
         manager = AuthManager(
+            enabled=False,
+            unauth_paths=[],
+
             internal_type="foobar",
             internal_kwargs={},
+            force_internal_users=[],
+
             external_type="",
             external_kwargs={},
-            force_internal_users=[],
-            enabled=False,
+
+            totp_secret_path="",
         )
 
         assert not manager.is_auth_enabled()
+        assert not manager.is_auth_required(_E_AUTH)
+        assert not manager.is_auth_required(_E_UNAUTH)
+        assert not manager.is_auth_required(_E_FREE)
 
         with pytest.raises(AssertionError):
             await manager.authorize("admin", "admin")

@@ -1,8 +1,8 @@
 # ========================================================================== #
 #                                                                            #
-#    KVMD - The main Pi-KVM daemon.                                          #
+#    KVMD - The main PiKVM daemon.                                           #
 #                                                                            #
-#    Copyright (C) 2018  Maxim Devaev <mdevaev@gmail.com>                    #
+#    Copyright (C) 2018-2023  Maxim Devaev <mdevaev@gmail.com>               #
 #                                                                            #
 #    This program is free software: you can redistribute it and/or modify    #
 #    it under the terms of the GNU General Public License as published by    #
@@ -23,10 +23,6 @@
 import asyncio
 import threading
 import dataclasses
-
-from typing import Tuple
-from typing import Dict
-from typing import Optional
 
 import gpiod
 
@@ -55,7 +51,7 @@ class AioReader:  # pylint: disable=too-many-instance-attributes
         self,
         path: str,
         consumer: str,
-        pins: Dict[int, AioReaderPinParams],
+        pins: dict[int, AioReaderPinParams],
         notifier: aiotools.AioNotifier,
     ) -> None:
 
@@ -64,12 +60,12 @@ class AioReader:  # pylint: disable=too-many-instance-attributes
         self.__pins = pins
         self.__notifier = notifier
 
-        self.__values: Optional[Dict[int, _DebouncedValue]] = None
+        self.__values: (dict[int, _DebouncedValue] | None) = None
 
         self.__thread = threading.Thread(target=self.__run, daemon=True)
         self.__stop_event = threading.Event()
 
-        self.__loop: Optional[asyncio.AbstractEventLoop] = None
+        self.__loop: (asyncio.AbstractEventLoop | None) = None
 
     def get(self, pin: int) -> bool:
         value = (self.__values[pin].get() if self.__values is not None else False)
@@ -106,7 +102,7 @@ class AioReader:  # pylint: disable=too-many-instance-attributes
                 )
                 for (pin, value) in zip(pins, lines.get_values())
             }
-            self.__loop.call_soon_threadsafe(self.__notifier.notify_sync)
+            self.__loop.call_soon_threadsafe(self.__notifier.notify)
 
             while not self.__stop_event.is_set():
                 ev_lines = lines.event_wait(1)
@@ -123,7 +119,7 @@ class AioReader:  # pylint: disable=too-many-instance-attributes
                     for (pin, value) in zip(pins, lines.get_values()):
                         self.__values[pin].set(bool(value))
 
-    def __parse_event(self, event: gpiod.LineEvent) -> Tuple[int, int]:
+    def __parse_event(self, event: gpiod.LineEvent) -> tuple[int, int]:
         pin = event.source.offset()
         if event.type == gpiod.LineEvent.RISING_EDGE:
             return (pin, 1)
@@ -146,7 +142,7 @@ class _DebouncedValue:
         self.__notifier = notifier
         self.__loop = loop
 
-        self.__queue: "asyncio.Queue[bool]" = asyncio.Queue(loop=loop)
+        self.__queue: "asyncio.Queue[bool]" = asyncio.Queue()  # type: ignore
         self.__task = loop.create_task(self.__consumer_task_loop())
 
     def set(self, value: bool) -> None:
@@ -168,5 +164,5 @@ class _DebouncedValue:
                 value = await self.__queue.get()
             if self.__value != value:
                 self.__value = value
-                await self.__notifier.notify()
+                self.__notifier.notify()
             await asyncio.sleep(self.__debounce)

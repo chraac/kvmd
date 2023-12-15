@@ -1,8 +1,8 @@
 # ========================================================================== #
 #                                                                            #
-#    KVMD - The main Pi-KVM daemon.                                          #
+#    KVMD - The main PiKVM daemon.                                           #
 #                                                                            #
-#    Copyright (C) 2018  Maxim Devaev <mdevaev@gmail.com>                    #
+#    Copyright (C) 2018-2023  Maxim Devaev <mdevaev@gmail.com>               #
 #                                                                            #
 #    This program is free software: you can redistribute it and/or modify    #
 #    it under the terms of the GNU General Public License as published by    #
@@ -20,13 +20,11 @@
 # ========================================================================== #
 
 
-from typing import Optional
-
 from . import Hid
 
 
 # =====
-def make_mouse_hid(absolute: bool, horizontal_wheel: bool, report_id: Optional[int]=None) -> Hid:
+def make_mouse_hid(absolute: bool, horizontal_wheel: bool, report_id: (int | None)=None) -> Hid:
     maker = (_make_absolute_hid if absolute else _make_relative_hid)
     return maker(horizontal_wheel, report_id)
 
@@ -42,7 +40,7 @@ _HORIZONTAL_WHEEL = [
 ]
 
 
-def _make_absolute_hid(horizontal_wheel: bool, report_id: Optional[int]) -> Hid:
+def _make_absolute_hid(horizontal_wheel: bool, report_id: (int | None)) -> Hid:
     return Hid(
         protocol=0,  # None protocol
         subclass=0,  # No subclass
@@ -64,6 +62,10 @@ def _make_absolute_hid(horizontal_wheel: bool, report_id: Optional[int]) -> Hid:
 
             # Report ID
             *([0x85, report_id] if report_id is not None else []),
+
+            # Pointer and Physical are required by Apple Recovery
+            0x09, 0x01,  # USAGE (Pointer)
+            0xA1, 0x00,  # COLLECTION (Physical)
 
             # 8 Buttons
             0x05, 0x09,  # USAGE_PAGE (Button)
@@ -96,12 +98,13 @@ def _make_absolute_hid(horizontal_wheel: bool, report_id: Optional[int]) -> Hid:
             *(_HORIZONTAL_WHEEL if horizontal_wheel else []),
 
             # End
+            0xC0,  # END_COLLECTION (Physical)
             0xC0,  # END_COLLECTION
         ]),
     )
 
 
-def _make_relative_hid(horizontal_wheel: bool, report_id: Optional[int]) -> Hid:
+def _make_relative_hid(horizontal_wheel: bool, report_id: (int | None)) -> Hid:
     return Hid(
         protocol=2,  # Mouse protocol
         subclass=1,  # Boot interface subclass
@@ -118,6 +121,10 @@ def _make_relative_hid(horizontal_wheel: bool, report_id: Optional[int]) -> Hid:
 
             # Report ID
             *([0x85, report_id] if report_id is not None else []),
+
+            # Pointer and Physical are required by Apple Recovery
+            0x09, 0x01,  # USAGE (Pointer)
+            0xA1, 0x00,  # COLLECTION (Physical)
 
             # 8 Buttons
             0x05, 0x09,  # USAGE_PAGE (Button)
@@ -145,6 +152,7 @@ def _make_relative_hid(horizontal_wheel: bool, report_id: Optional[int]) -> Hid:
             *(_HORIZONTAL_WHEEL if horizontal_wheel else []),
 
             # End
+            0xC0,  # END_COLLECTION (Physical)
             0xC0,  # END_COLLECTION
         ]),
     )

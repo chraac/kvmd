@@ -1,8 +1,8 @@
 # ========================================================================== #
 #                                                                            #
-#    KVMD - The main Pi-KVM daemon.                                          #
+#    KVMD - The main PiKVM daemon.                                           #
 #                                                                            #
-#    Copyright (C) 2018  Maxim Devaev <mdevaev@gmail.com>                    #
+#    Copyright (C) 2018-2023  Maxim Devaev <mdevaev@gmail.com>               #
 #                                                                            #
 #    This program is free software: you can redistribute it and/or modify    #
 #    it under the terms of the GNU General Public License as published by    #
@@ -29,7 +29,7 @@ from kvmd.logging import get_logger
 @pytest.mark.parametrize("depth, name", [
     (0, "tests.test_logging"),
     (1, "_pytest.python"),
-    (2, "pluggy.callers"),
+    (2, "pluggy._callers"),
 ])
 def test_ok__get_logger(depth: int, name: str) -> None:
     assert get_logger(depth).name == name

@@ -1,6 +1,6 @@
 # ========================================================================== #
 #                                                                            #
-#    KVMD - The main Pi-KVM daemon.                                          #
+#    KVMD - The main PiKVM daemon.                                           #
 #                                                                            #
 #    Copyright (C) 2020  Maxim Devaev <mdevaev@gmail.com>                    #
 #                                                                            #
@@ -20,10 +20,14 @@
 # ========================================================================== #
 
 
+from .... import tools
+
+
+# =====
 class RfbError(Exception):
     pass
 
 
 class RfbConnectionError(RfbError):
-    def __init__(self, err: Exception) -> None:
-        super().__init__(type(err).__name__)
+    def __init__(self, msg: str, err: Exception) -> None:
+        super().__init__(f"{msg}: {tools.efmt(err)}")

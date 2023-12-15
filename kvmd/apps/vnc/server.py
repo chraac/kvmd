@@ -1,6 +1,6 @@
 # ========================================================================== #
 #                                                                            #
-#    KVMD - The main Pi-KVM daemon.                                          #
+#    KVMD - The main PiKVM daemon.                                           #
 #                                                                            #
 #    Copyright (C) 2020  Maxim Devaev <mdevaev@gmail.com>                    #
 #                                                                            #
@@ -26,10 +26,6 @@ import socket
 import dataclasses
 import contextlib
 
-from typing import Dict
-from typing import Union
-from typing import Optional
-
 import aiohttp
 
 from ...logging import get_logger
@@ -45,11 +41,15 @@ from ...clients.kvmd import KvmdClientSession
 from ...clients.kvmd import KvmdClient
 
 from ...clients.streamer import StreamerError
-from ...clients.streamer import StreamerClient
+from ...clients.streamer import StreamerPermError
+from ...clients.streamer import StreamFormats
+from ...clients.streamer import BaseStreamerClient
+
+from ... import tools
+from ... import aiotools
 
 from .rfb import RfbClient
 from .rfb.stream import rfb_format_remote
-from .rfb.stream import rfb_close_writer
 from .rfb.errors import RfbError
 
 from .vncauth import VncAuthKvmdCredentials
@@ -63,25 +63,29 @@ from .render import make_text_jpeg
 class _SharedParams:
     width: int = dataclasses.field(default=800)
     height: int = dataclasses.field(default=600)
-    name: str = dataclasses.field(default="Pi-KVM")
+    name: str = dataclasses.field(default="PiKVM")
 
 
 class _Client(RfbClient):  # pylint: disable=too-many-instance-attributes
-    def __init__(  # pylint: disable=too-many-arguments
+    def __init__(  # pylint: disable=too-many-arguments,too-many-locals
         self,
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
         tls_ciphers: str,
         tls_timeout: float,
+        x509_cert_path: str,
+        x509_key_path: str,
 
         desired_fps: int,
+        mouse_output: str,
         keymap_name: str,
-        symmap: Dict[int, Dict[int, str]],
+        symmap: dict[int, dict[int, str]],
 
         kvmd: KvmdClient,
-        streamer: StreamerClient,
+        streamers: list[BaseStreamerClient],
 
-        vnc_credentials: Dict[str, VncAuthKvmdCredentials],
+        vnc_credentials: dict[str, VncAuthKvmdCredentials],
+        vencrypt: bool,
         none_auth_only: bool,
         shared_params: _SharedParams,
     ) -> None:
@@ -93,35 +97,38 @@ class _Client(RfbClient):  # pylint: disable=too-many-instance-attributes
             writer=writer,
             tls_ciphers=tls_ciphers,
             tls_timeout=tls_timeout,
+            x509_cert_path=x509_cert_path,
+            x509_key_path=x509_key_path,
             vnc_passwds=list(vnc_credentials),
+            vencrypt=vencrypt,
             none_auth_only=none_auth_only,
             **dataclasses.asdict(shared_params),
         )
 
         self.__desired_fps = desired_fps
+        self.__mouse_output = mouse_output
         self.__keymap_name = keymap_name
         self.__symmap = symmap
 
         self.__kvmd = kvmd
-        self.__streamer = streamer
+        self.__streamers = streamers
 
         self.__shared_params = shared_params
 
-        self.__authorized = asyncio.Future()  # type: ignore
-        self.__ws_connected = asyncio.Future()  # type: ignore
-        self.__kvmd_session: Optional[KvmdClientSession] = None
-        self.__kvmd_ws: Optional[KvmdClientWs] = None
+        self.__stage1_authorized = aiotools.AioStage()
+        self.__stage2_encodings_accepted = aiotools.AioStage()
+        self.__stage3_ws_connected = aiotools.AioStage()
 
-        self.__fb_requested = False
-        self.__fb_stub_text = ""
-        self.__fb_stub_quality = 0
+        self.__kvmd_session: (KvmdClientSession | None) = None
+        self.__kvmd_ws: (KvmdClientWs | None) = None
+
+        self.__fb_queue: "asyncio.Queue[dict]" = asyncio.Queue()
+        self.__fb_has_key = False
 
         # Эти состояния шарить не обязательно - бекенд исключает дублирующиеся события.
         # Все это нужно только чтобы не посылать лишние жсоны в сокет KVMD
-        self.__mouse_buttons: Dict[str, Optional[bool]] = dict.fromkeys(["left", "right", "middle"], None)
+        self.__mouse_buttons: dict[str, (bool | None)] = dict.fromkeys(["left", "right", "middle"], None)
         self.__mouse_move = {"x": -1, "y": -1}
-
-        self.__lock = asyncio.Lock()
 
         self.__modifiers = 0
 
@@ -132,103 +139,179 @@ class _Client(RfbClient):  # pylint: disable=too-many-instance-attributes
             await self._run(
                 kvmd=self.__kvmd_task_loop(),
                 streamer=self.__streamer_task_loop(),
+                fb_sender=self.__fb_sender_task_loop(),
             )
         finally:
-            if self.__kvmd_session:
-                await self.__kvmd_session.close()
-                self.__kvmd_session = None
+            await aiotools.shield_fg(self.__cleanup())
+
+    async def __cleanup(self) -> None:
+        if self.__kvmd_session:
+            await self.__kvmd_session.close()
+            self.__kvmd_session = None
 
     # =====
 
     async def __kvmd_task_loop(self) -> None:
         logger = get_logger(0)
-        await self.__authorized
+        await self.__stage1_authorized.wait_passed()
+
+        logger.info("%s [kvmd]: Waiting for the SetEncodings message ...", self._remote)
+        if not (await self.__stage2_encodings_accepted.wait_passed(timeout=5)):
+            raise RfbError("No SetEncodings message recieved from the client in 5 secs")
+
         assert self.__kvmd_session
         try:
+            logger.info("%s [kvmd]: Applying HID params: mouse_output=%s ...", self._remote, self.__mouse_output)
+            await self.__kvmd_session.hid.set_params(mouse_output=self.__mouse_output)
+
             async with self.__kvmd_session.ws() as self.__kvmd_ws:
-                logger.info("[kvmd] %s: Connected to KVMD websocket", self._remote)
-                self.__ws_connected.set_result(None)
-                async for event in self.__kvmd_ws.communicate():
-                    await self.__process_ws_event(event)
-                raise RfbError("KVMD closes the websocket (the server may have been stopped)")
+                logger.info("%s [kvmd]: Connected to KVMD websocket", self._remote)
+                self.__stage3_ws_connected.set_passed()
+                async for (event_type, event) in self.__kvmd_ws.communicate():
+                    await self.__process_ws_event(event_type, event)
+                raise RfbError("KVMD closed the websocket (the server may have been stopped)")
         finally:
             self.__kvmd_ws = None
 
-    async def __process_ws_event(self, event: Dict) -> None:
-        if event["event_type"] == "info_meta_state":
+    async def __process_ws_event(self, event_type: str, event: dict) -> None:
+        if event_type == "info_meta_state":
             try:
-                host = event["event"]["server"]["host"]
+                host = event["server"]["host"]
             except Exception:
                 host = None
             else:
                 if isinstance(host, str):
-                    name = f"Pi-KVM: {host}"
-                    async with self.__lock:
-                        if self._encodings.has_rename:
-                            await self._send_rename(name)
+                    name = f"PiKVM: {host}"
+                    if self._encodings.has_rename:
+                        await self._send_rename(name)
                     self.__shared_params.name = name
 
-        elif event["event_type"] == "hid_state":
-            async with self.__lock:
-                if self._encodings.has_leds_state:
-                    await self._send_leds_state(**event["event"]["keyboard"]["leds"])
+        elif event_type == "hid_state":
+            if self._encodings.has_leds_state:
+                await self._send_leds_state(**event["keyboard"]["leds"])
 
     # =====
 
     async def __streamer_task_loop(self) -> None:
         logger = get_logger(0)
-        await self.__ws_connected
+        await self.__stage3_ws_connected.wait_passed()
+        streamer = self.__get_preferred_streamer()
         while True:
             try:
                 streaming = False
-                async for (online, width, height, jpeg) in self.__streamer.read_stream():
-                    if not streaming:
-                        logger.info("[streamer] %s: Streaming ...", self._remote)
-                        streaming = True
-                    if online:
-                        await self.__send_fb_real(width, height, jpeg)
-                    else:
-                        await self.__send_fb_stub("No signal")
+                async with streamer.reading() as read_frame:
+                    while True:
+                        frame = await read_frame(not self.__fb_has_key)
+                        if not streaming:
+                            logger.info("%s [streamer]: Streaming ...", self._remote)
+                            streaming = True
+                        if frame["online"]:
+                            await self.__queue_frame(frame)
+                        else:
+                            await self.__queue_frame("No signal")
             except StreamerError as err:
-                logger.info("[streamer] %s: Waiting for stream: %s", self._remote, err)
-                await self.__send_fb_stub("Waiting for stream ...")
+                if isinstance(err, StreamerPermError):
+                    streamer = self.__get_default_streamer()
+                    logger.info("%s [streamer]: Permanent error: %s; switching to %s ...", self._remote, err, streamer)
+                else:
+                    logger.info("%s [streamer]: Waiting for stream: %s", self._remote, err)
+                await self.__queue_frame("Waiting for stream ...")
                 await asyncio.sleep(1)
 
-    async def __send_fb_real(self, width: int, height: int, jpeg: bytes) -> None:
-        async with self.__lock:
-            if self.__fb_requested:
-                if (self._width, self._height) != (width, height):
-                    self.__shared_params.width = width
-                    self.__shared_params.height = height
-                    if not self._encodings.has_resize:
-                        msg = f"Resoultion changed: {self._width}x{self._height} -> {width}x{height}\nPlease reconnect"
-                        await self.__send_fb_stub(msg, no_lock=True)
-                        return
-                    await self._send_resize(width, height)
-                await self._send_fb(jpeg)
-                self.__fb_stub_text = ""
-                self.__fb_stub_quality = 0
-                self.__fb_requested = False
+    def __get_preferred_streamer(self) -> BaseStreamerClient:
+        formats = {
+            StreamFormats.JPEG: "has_tight",
+            StreamFormats.H264: "has_h264",
+        }
+        streamer: (BaseStreamerClient | None) = None
+        for streamer in self.__streamers:
+            if getattr(self._encodings, formats[streamer.get_format()]):
+                get_logger(0).info("%s [streamer]: Using preferred %s", self._remote, streamer)
+                return streamer
+        raise RuntimeError("No streamers found")
 
-    async def __send_fb_stub(self, text: str, no_lock: bool=False) -> None:
-        if not no_lock:
-            await self.__lock.acquire()
-        try:
-            if self.__fb_requested and (self.__fb_stub_text != text or self.__fb_stub_quality != self._encodings.tight_jpeg_quality):
-                await self._send_fb(await make_text_jpeg(self._width, self._height, self._encodings.tight_jpeg_quality, text))
-                self.__fb_stub_text = text
-                self.__fb_stub_quality = self._encodings.tight_jpeg_quality
-                self.__fb_requested = False
-        finally:
-            if not no_lock:
-                self.__lock.release()
+    def __get_default_streamer(self) -> BaseStreamerClient:
+        streamer = self.__streamers[-1]
+        get_logger(0).info("%s [streamer]: Using default %s", self._remote, streamer)
+        return streamer
+
+    async def __queue_frame(self, frame: (dict | str)) -> None:
+        if isinstance(frame, str):
+            frame = await self.__make_text_frame(frame)
+        if self.__fb_queue.qsize() > 10:
+            self.__fb_queue.get_nowait()
+        self.__fb_queue.put_nowait(frame)
+
+    async def __make_text_frame(self, text: str) -> dict:
+        return {
+            "data": (await make_text_jpeg(self._width, self._height, self._encodings.tight_jpeg_quality, text)),
+            "width": self._width,
+            "height": self._height,
+            "format": StreamFormats.JPEG,
+        }
+
+    async def __fb_sender_task_loop(self) -> None:  # pylint: disable=too-many-branches
+        last: (dict | None) = None
+        async for _ in self._send_fb_allowed():
+            while True:
+                frame = await self.__fb_queue.get()
+                if (
+                    last is None  # pylint: disable=too-many-boolean-expressions
+                    or frame["format"] == StreamFormats.JPEG
+                    or last["format"] != frame["format"]
+                    or (frame["format"] == StreamFormats.H264 and (
+                        frame["key"]
+                        or last["width"] != frame["width"]
+                        or last["height"] != frame["height"]
+                        or len(last["data"]) + len(frame["data"]) > 4194304
+                    ))
+                ):
+                    self.__fb_has_key = (frame["format"] == StreamFormats.H264 and frame["key"])
+                    last = frame
+                    if self.__fb_queue.qsize() == 0:
+                        break
+                    continue
+                assert frame["format"] == StreamFormats.H264
+                last["data"] += frame["data"]
+                if self.__fb_queue.qsize() == 0:
+                    break
+
+            if self._width != last["width"] or self._height != last["height"]:
+                self.__shared_params.width = last["width"]
+                self.__shared_params.height = last["height"]
+                if not self._encodings.has_resize:
+                    msg = (
+                        f"Resoultion changed: {self._width}x{self._height}"
+                        f" -> {last['width']}x{last['height']}\nPlease reconnect"
+                    )
+                    await self._send_fb_jpeg((await self.__make_text_frame(msg))["data"])
+                    continue
+                await self._send_resize(last["width"], last["height"])
+
+            if len(last["data"]) == 0:
+                # Вдруг какой-то баг
+                await self._send_fb_allow_again()
+                continue
+
+            if last["format"] == StreamFormats.JPEG:
+                await self._send_fb_jpeg(last["data"])
+            elif last["format"] == StreamFormats.H264:
+                if not self._encodings.has_h264:
+                    raise RfbError("The client doesn't want to accept H264 anymore")
+                if self.__fb_has_key:
+                    await self._send_fb_h264(last["data"])
+                else:
+                    await self._send_fb_allow_again()
+            else:
+                raise RuntimeError(f"Unknown format: {last['format']}")
+            last["data"] = b""
 
     # =====
 
     async def _authorize_userpass(self, user: str, passwd: str) -> bool:
         self.__kvmd_session = self.__kvmd.make_session(user, passwd)
         if (await self.__kvmd_session.auth.check()):
-            self.__authorized.set_result(None)
+            self.__stage1_authorized.set_passed()
             return True
         return False
 
@@ -245,26 +328,38 @@ class _Client(RfbClient):  # pylint: disable=too-many-instance-attributes
 
     async def _on_key_event(self, code: int, state: bool) -> None:
         is_modifier = self.__switch_modifiers(code, state)
-        if self.__kvmd_ws:
-            web_keys = self.__symmap.get(code)
-            if web_keys:
-                if is_modifier:
-                    web_key = web_keys.get(0)
-                else:
-                    web_key = web_keys.get(self.__modifiers)
-                    if web_key is None:
-                        web_key = web_keys.get(0)
-                if web_key is not None:
-                    await self.__kvmd_ws.send_key_event(web_key, state)
+        variants = self.__symmap.get(code)
+        fake_shift = False
+
+        if variants:
+            if is_modifier:
+                web_key = variants.get(0)
+            else:
+                web_key = variants.get(self.__modifiers)
+                if web_key is None:
+                    web_key = variants.get(0)
+
+                if web_key is None and self.__modifiers == 0 and SymmapModifiers.SHIFT in variants:
+                    # JUMP doesn't send shift events:
+                    #   - https://github.com/pikvm/pikvm/issues/820
+                    web_key = variants[SymmapModifiers.SHIFT]
+                    fake_shift = True
+
+            if web_key and self.__kvmd_ws:
+                if fake_shift:
+                    await self.__kvmd_ws.send_key_event(WebModifiers.SHIFT_LEFT, True)
+                await self.__kvmd_ws.send_key_event(web_key, state)
+                if fake_shift:
+                    await self.__kvmd_ws.send_key_event(WebModifiers.SHIFT_LEFT, False)
 
     async def _on_ext_key_event(self, code: int, state: bool) -> None:
         web_key = AT1_TO_WEB.get(code)
-        if web_key is not None:
+        if web_key:
             self.__switch_modifiers(web_key, state)  # Предполагаем, что модификаторы всегда известны
             if self.__kvmd_ws:
                 await self.__kvmd_ws.send_key_event(web_key, state)
 
-    def __switch_modifiers(self, key: Union[int, str], state: bool) -> bool:
+    def __switch_modifiers(self, key: (int | str), state: bool) -> bool:
         mod = 0
         if key in X11Modifiers.SHIFTS or key in WebModifiers.SHIFTS:
             mod = SymmapModifiers.SHIFT
@@ -280,13 +375,8 @@ class _Client(RfbClient):  # pylint: disable=too-many-instance-attributes
             self.__modifiers &= ~mod
         return True
 
-    async def _on_pointer_event(self, buttons: Dict[str, bool], wheel: Dict[str, int], move: Dict[str, int]) -> None:
+    async def _on_pointer_event(self, buttons: dict[str, bool], wheel: dict[str, int], move: dict[str, int]) -> None:
         if self.__kvmd_ws:
-            for (button, state) in buttons.items():
-                if self.__mouse_buttons[button] != state:
-                    await self.__kvmd_ws.send_mouse_button_event(button, state)
-                    self.__mouse_buttons[button] = state
-
             if wheel["x"] or wheel["y"]:
                 await self.__kvmd_ws.send_mouse_wheel_event(wheel["x"], wheel["y"])
 
@@ -294,33 +384,34 @@ class _Client(RfbClient):  # pylint: disable=too-many-instance-attributes
                 await self.__kvmd_ws.send_mouse_move_event(move["x"], move["y"])
                 self.__mouse_move = move
 
+            for (button, state) in buttons.items():
+                if self.__mouse_buttons[button] != state:
+                    await self.__kvmd_ws.send_mouse_button_event(button, state)
+                    self.__mouse_buttons[button] = state
+
     async def _on_cut_event(self, text: str) -> None:
-        assert self.__authorized.done()
+        assert self.__stage1_authorized.is_passed()
         assert self.__kvmd_session
         logger = get_logger(0)
-        logger.info("[main] %s: Printing %d characters ...", self._remote, len(text))
+        logger.info("%s [main]: Printing %d characters ...", self._remote, len(text))
         try:
-            (default, available) = await self.__kvmd_session.hid.get_keymaps()
-            await self.__kvmd_session.hid.print(
-                text=text,
-                limit=0,
-                keymap_name=(self.__keymap_name if self.__keymap_name in available else default),
-            )
+            (keymap_name, available) = await self.__kvmd_session.hid.get_keymaps()
+            if self.__keymap_name in available:
+                keymap_name = self.__keymap_name
+            await self.__kvmd_session.hid.print(text, 0, keymap_name)
         except Exception:
-            logger.exception("[main] %s: Can't print characters", self._remote)
+            logger.exception("%s [main]: Can't print characters", self._remote)
 
     async def _on_set_encodings(self) -> None:
-        assert self.__authorized.done()
+        assert self.__stage1_authorized.is_passed()
         assert self.__kvmd_session
+        self.__stage2_encodings_accepted.set_passed(multi=True)
+
         has_quality = (await self.__kvmd_session.streamer.get_state())["features"]["quality"]
         quality = (self._encodings.tight_jpeg_quality if has_quality else None)
-        get_logger(0).info("[main] %s: Applying streamer params: quality=%s; desired_fps=%d ...",
+        get_logger(0).info("%s [main]: Applying streamer params: jpeg_quality=%s; desired_fps=%d ...",
                            self._remote, quality, self.__desired_fps)
         await self.__kvmd_session.streamer.set_params(quality, self.__desired_fps)
-
-    async def _on_fb_update_request(self) -> None:
-        async with self.__lock:
-            self.__fb_requested = True
 
 
 # =====
@@ -339,12 +430,17 @@ class VncServer:  # pylint: disable=too-many-instance-attributes
 
         tls_ciphers: str,
         tls_timeout: float,
+        x509_cert_path: str,
+        x509_key_path: str,
+
+        vencrypt_enabled: bool,
 
         desired_fps: int,
+        mouse_output: str,
         keymap_path: str,
 
         kvmd: KvmdClient,
-        streamer: StreamerClient,
+        streamers: list[BaseStreamerClient],
         vnc_auth_manager: VncAuthManager,
     ) -> None:
 
@@ -359,10 +455,14 @@ class VncServer:  # pylint: disable=too-many-instance-attributes
 
         shared_params = _SharedParams()
 
+        async def cleanup_client(writer: asyncio.StreamWriter) -> None:
+            if (await aiotools.close_writer(writer)):
+                get_logger(0).info("%s [entry]: Connection is closed in an emergency", rfb_format_remote(writer))
+
         async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
             logger = get_logger(0)
             remote = rfb_format_remote(writer)
-            logger.info("[entry] %s: Connected client", remote)
+            logger.info("%s [entry]: Connected client", remote)
             try:
                 sock = writer.get_extra_info("socket")
                 if no_delay:
@@ -375,13 +475,13 @@ class VncServer:  # pylint: disable=too-many-instance-attributes
                     sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, keepalive_interval)
                     sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, keepalive_count)
                     timeout = (keepalive_idle + keepalive_interval * keepalive_count) * 1000  # Milliseconds
-                    sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_USER_TIMEOUT, timeout)
+                    sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_USER_TIMEOUT, timeout)  # type: ignore
 
                 try:
                     async with kvmd.make_session("", "") as kvmd_session:
                         none_auth_only = await kvmd_session.auth.check()
                 except (aiohttp.ClientError, asyncio.TimeoutError) as err:
-                    logger.error("[entry] %s: Can't check KVMD auth mode: %s: %s", remote, type(err).__name__, err)
+                    logger.error("%s [entry]: Can't check KVMD auth mode: %s", remote, tools.efmt(err))
                     return
 
                 await _Client(
@@ -389,55 +489,46 @@ class VncServer:  # pylint: disable=too-many-instance-attributes
                     writer=writer,
                     tls_ciphers=tls_ciphers,
                     tls_timeout=tls_timeout,
+                    x509_cert_path=x509_cert_path,
+                    x509_key_path=x509_key_path,
                     desired_fps=desired_fps,
+                    mouse_output=mouse_output,
                     keymap_name=keymap_name,
                     symmap=symmap,
                     kvmd=kvmd,
-                    streamer=streamer,
+                    streamers=streamers,
                     vnc_credentials=(await self.__vnc_auth_manager.read_credentials())[0],
                     none_auth_only=none_auth_only,
+                    vencrypt=vencrypt_enabled,
                     shared_params=shared_params,
                 ).run()
             except Exception:
-                logger.exception("[entry] %s: Unhandled exception in client task", remote)
+                logger.exception("%s [entry]: Unhandled exception in client task", remote)
             finally:
-                if (await rfb_close_writer(writer)):
-                    logger.info("[entry] %s: Connection is closed in an emergency", remote)
+                await aiotools.shield_fg(cleanup_client(writer))
 
         self.__handle_client = handle_client
 
-    def run(self) -> None:
-        logger = get_logger(0)
-        loop = asyncio.get_event_loop()
-        try:
-            if not loop.run_until_complete(self.__vnc_auth_manager.read_credentials())[1]:
-                raise SystemExit(1)
+    async def __inner_run(self) -> None:
+        if not (await self.__vnc_auth_manager.read_credentials())[1]:
+            raise SystemExit(1)
 
-            logger.info("Listening VNC on TCP [%s]:%d ...", self.__host, self.__port)
-
-            with contextlib.closing(socket.socket(socket.AF_INET6, socket.SOCK_STREAM)) as sock:
+        get_logger(0).info("Listening VNC on TCP [%s]:%d ...", self.__host, self.__port)
+        (family, _, _, _, addr) = socket.getaddrinfo(self.__host, self.__port, type=socket.SOCK_STREAM)[0]
+        with contextlib.closing(socket.socket(family, socket.SOCK_STREAM)) as sock:
+            if family == socket.AF_INET6:
                 sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
-                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                sock.bind((self.__host, self.__port))
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind(addr)
 
-                server = loop.run_until_complete(asyncio.start_server(
-                    client_connected_cb=self.__handle_client,
-                    sock=sock,
-                    backlog=self.__max_clients,
-                    loop=loop,
-                ))
+            server = await asyncio.start_server(
+                client_connected_cb=self.__handle_client,
+                sock=sock,
+                backlog=self.__max_clients,
+            )
+            async with server:
+                await server.serve_forever()
 
-                try:
-                    loop.run_forever()
-                except (SystemExit, KeyboardInterrupt):
-                    pass
-                finally:
-                    server.close()
-                    loop.run_until_complete(server.wait_closed())
-        finally:
-            tasks = asyncio.all_tasks(loop)
-            for task in tasks:
-                task.cancel()
-            loop.run_until_complete(asyncio.gather(*tasks, return_exceptions=True))
-            loop.close()
-            logger.info("Bye-bye")
+    def run(self) -> None:
+        aiotools.run(self.__inner_run())
+        get_logger().info("Bye-bye")

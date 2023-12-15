@@ -1,8 +1,8 @@
 # ========================================================================== #
 #                                                                            #
-#    KVMD - The main Pi-KVM daemon.                                          #
+#    KVMD - The main PiKVM daemon.                                           #
 #                                                                            #
-#    Copyright (C) 2018  Maxim Devaev <mdevaev@gmail.com>                    #
+#    Copyright (C) 2018-2023  Maxim Devaev <mdevaev@gmail.com>               #
 #                                                                            #
 #    This program is free software: you can redistribute it and/or modify    #
 #    it under the terms of the GNU General Public License as published by    #
@@ -24,12 +24,10 @@ import sys
 import types
 import logging
 
-from typing import Optional
-
 
 # =====
 def get_logger(depth: int=1) -> logging.Logger:
-    frame: Optional[types.FrameType] = sys._getframe(1)  # pylint: disable=protected-access
+    frame: (types.FrameType | None) = sys._getframe(1)  # pylint: disable=protected-access
     assert frame
     frames = []
     while frame:

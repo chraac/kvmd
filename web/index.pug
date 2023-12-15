@@ -1,21 +1,22 @@
 extends start.pug
 
 append vars
-	- title = "Pi-KVM Index"
+	- title = "PiKVM Index"
 	- main_js = "index/main"
 	- css_list = css_list.concat(["window", "modal", "index/index"])
 
 block start
 	table
 		tr
-			td(valign="top" class="logo")
-				img(class="svg-gray" src=`${svg_dir}/logo.svg` alt="Pi-KVM" height="40")
-			td(valign="top")
+			td(class="logo")
+				a(href="https://pikvm.org" target="_blank")
+					img(class="svg-gray" src=`${svg_dir}/logo.svg` alt="PiKVM" height="40")
+			td
 				table
-					tr #[td(colspan="2" class="title") The Open Source IP-KVM]
+					tr #[td(colspan="2" class="title") The Open Source KVM over IP]
 					tr
 						td(colspan="2" class="copyright")
-							| Copyright &copy; 2018 #[a(target="_blank" href="mailto:mdevaev@gmail.com") Maxim Devaev]
+							| Copyright &copy; 2018-2023 #[a(target="_blank" href="mailto:mdevaev@gmail.com") Maxim Devaev]
 
 	hr
 	table
@@ -27,16 +28,20 @@ block start
 	div(id="apps-box")
 		h4 Loading ...
 
-	hr
-	p(class="text")
-		| Please note that when you are working with a KVM session or another application that captures the keyboard,
-		| you can't use some keyboard shortcuts such as Ctrl+Alt+Del (which will be caught by your OS) or Ctrl+W (caught by your browser).
-	p(class="text")
-		| To override this limitation you can use #[a(target="_blank" href="https://google.com/chrome") Google Chrome]
-		| or #[a(target="_blank" href="https://chromium.org/Home") Chromium] in application mode.
-	div(id="app-text" class="code")
+	div(id="app-keyboard-warning")
+		hr
+		p(class="text")
+			| Please note that when you are working with a KVM session or another application that captures the keyboard,
+			| you can't use some keyboard shortcuts such as Ctrl+Alt+Del (which will be caught by your OS) or Ctrl+W (caught by your browser).
+		p(class="text")
+			| To override this limitation you can use #[a(target="_blank" href="https://google.com/chrome") Google Chrome]
+			| or #[a(target="_blank" href="https://chromium.org/Home") Chromium] in application mode.
+		div(id="app-text" class="code")
 
 	hr
-	p(class="text")
-		| Full documentation, source code, hardware schematics and legal information
-		| can be found in our #[a(target="_blank" href="https://pikvm.org") official website].
+	p(class="text credits")
+		a(target="_blank" href="https://pikvm.org") PiKVM Project
+		| &nbsp; | &nbsp;
+		a(target="_blank" href="https://docs.pikvm.org") Documentation
+		| &nbsp; | &nbsp;
+		a(target="_blank" href="https://pikvm.org/support") Support

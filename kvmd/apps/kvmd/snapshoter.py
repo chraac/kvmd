@@ -1,8 +1,8 @@
 # ========================================================================== #
 #                                                                            #
-#    KVMD - The main Pi-KVM daemon.                                          #
+#    KVMD - The main PiKVM daemon.                                           #
 #                                                                            #
-#    Copyright (C) 2018  Maxim Devaev <mdevaev@gmail.com>                    #
+#    Copyright (C) 2018-2023  Maxim Devaev <mdevaev@gmail.com>               #
 #                                                                            #
 #    This program is free software: you can redistribute it and/or modify    #
 #    it under the terms of the GNU General Public License as published by    #
@@ -27,9 +27,9 @@ from typing import Callable
 
 from ...logging import get_logger
 
-from ...plugins.hid import BaseHid
-
 from ... import aiotools
+
+from ...plugins.hid import BaseHid
 
 from .streamer import Streamer
 
@@ -96,7 +96,7 @@ class Snapshoter:  # pylint: disable=too-many-instance-attributes
             logger.info("Time to take the new idle snapshot")
         try:
             self.__snapshoting = True
-            await notifier.notify()
+            notifier.notify()
 
             if not live:
                 await self.__wakeup()
@@ -116,7 +116,7 @@ class Snapshoter:  # pylint: disable=too-many-instance-attributes
             logger.exception("Unhandled exception while taking snapshot")
         finally:
             self.__snapshoting = False
-            await notifier.notify()
+            notifier.notify()
 
     async def __wakeup(self) -> None:
         logger = get_logger(0)
