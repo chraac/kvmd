@@ -27,21 +27,26 @@ from typing import Generator
 
 from .keysym import SymmapModifiers
 from .mappings import WebModifiers
+from .keysymutil import xkb_utf32_to_keysym
 
 
 # =====
 def _load_libxkbcommon() -> ctypes.CDLL:
     path = ctypes.util.find_library("xkbcommon")
     if not path:
-        raise RuntimeError("Where is libxkbcommon?")
+        return None
     assert path
     lib = ctypes.CDLL(path)
     for (name, restype, argtypes) in [
         ("xkb_utf32_to_keysym", ctypes.c_uint32, [ctypes.c_uint32]),
     ]:
-        func = getattr(lib, name)
+        func = None
+        try:
+            func = getattr(lib, name)
+        except AttributeError:
+            pass
         if not func:
-            raise RuntimeError(f"Where is libc.{name}?")
+            return None
         setattr(func, "restype", restype)
         setattr(func, "argtypes", argtypes)
     return lib
@@ -52,7 +57,7 @@ _libxkbcommon = _load_libxkbcommon()
 
 def _ch_to_keysym(ch: str) -> int:
     assert len(ch) == 1
-    return _libxkbcommon.xkb_utf32_to_keysym(ord(ch))
+    return _libxkbcommon.xkb_utf32_to_keysym(ord(ch)) if _libxkbcommon else xkb_utf32_to_keysym(ord(ch))
 
 
 # =====
