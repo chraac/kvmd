@@ -1,0 +1,15 @@
+# For HDMI-to-USB adaptor:
+SUBSYSTEM=="usb", DRIVER=="snd-usb-audio", ATTRS{idProduct}=="21??", ATTRS{manufacturer}=="MACROSILICON", \
+    RUN+="/bin/sh -c 'echo -n $kernel > /sys/bus/usb/drivers/snd-usb-audio/unbind'"
+
+SUBSYSTEM=="usb", DRIVER=="snd-usb-audio", ATTRS{idProduct}=="21??", ATTRS{manufacturer}=="MACROSILICON", \
+    ATTR{bInterfaceNumber}=="00", RUN+="/bin/sh -c 'sleep 1; echo -n $kernel > /sys/bus/usb/drivers/uvcvideo/bind'"
+
+# https://unix.stackexchange.com/questions/66901/how-to-bind-usb-device-under-a-static-name
+# https://wiki.archlinux.org/index.php/Udev#Setting_static_device_names
+# 0Eh Interface Video, see also: https://www.usb.org/defined-class-codes 
+KERNEL=="video[0-9]*", SUBSYSTEM=="video4linux", SUBSYSTEMS=="usb", ATTRS{idProduct}=="21??", ATTR{index}=="0", GROUP="kvmd", SYMLINK+="kvmd-video"
+KERNEL=="gpiochip[0-9]*", SUBSYSTEM=="gpio", GROUP="kvmd"
+KERNEL=="hidg0", GROUP="kvmd", SYMLINK+="kvmd-hid-keyboard"
+KERNEL=="hidg1", GROUP="kvmd", SYMLINK+="kvmd-hid-mouse"
+KERNEL=="hidg2", GROUP="kvmd", SYMLINK+="kvmd-hid-mouse-alt"
