@@ -3,7 +3,7 @@
 #                                                                            #
 #    KVMD - The main PiKVM daemon.                                           #
 #                                                                            #
-#    Copyright (C) 2018-2023  Maxim Devaev <mdevaev@gmail.com>               #
+#    Copyright (C) 2018-2024  Maxim Devaev <mdevaev@gmail.com>               #
 #                                                                            #
 #    This program is free software: you can redistribute it and/or modify    #
 #    it under the terms of the GNU General Public License as published by    #
@@ -56,7 +56,7 @@ def main() -> None:
 
     setup(
         name="kvmd",
-        version="3.288",
+        version="4.3",
         url="https://github.com/pikvm/kvmd",
         license="GPLv3",
         author="Maxim Devaev",
@@ -95,10 +95,10 @@ def main() -> None:
             "kvmd.apps.htpasswd",
             "kvmd.apps.totp",
             "kvmd.apps.edidconf",
-            "kvmd.apps.cleanup",
             "kvmd.apps.ipmi",
             "kvmd.apps.vnc",
             "kvmd.apps.vnc.rfb",
+            "kvmd.apps.ngxmkconf",
             "kvmd.apps.janus",
             "kvmd.apps.watchdog",
             "kvmd.helpers",
@@ -122,9 +122,9 @@ def main() -> None:
                 "kvmd-htpasswd = kvmd.apps.htpasswd:main",
                 "kvmd-totp = kvmd.apps.totp:main",
                 "kvmd-edidconf = kvmd.apps.edidconf:main",
-                "kvmd-cleanup = kvmd.apps.cleanup:main",
                 "kvmd-ipmi = kvmd.apps.ipmi:main",
                 "kvmd-vnc = kvmd.apps.vnc:main",
+                "kvmd-nginx-mkconf = kvmd.apps.ngxmkconf:main",
                 "kvmd-janus = kvmd.apps.janus:main",
                 "kvmd-watchdog = kvmd.apps.watchdog:main",
                 "kvmd-helper-pst-remount = kvmd.helpers.remount:main",
@@ -136,7 +136,7 @@ def main() -> None:
         classifiers=[
             "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
             "Development Status :: 5 - Production/Stable",
-            "Programming Language :: Python :: 3.11",
+            "Programming Language :: Python :: 3.12",
             "Topic :: System :: Systems Administration",
             "Operating System :: POSIX :: Linux",
             "Intended Audience :: System Administrators",

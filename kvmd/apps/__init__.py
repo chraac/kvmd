@@ -2,7 +2,7 @@
 #                                                                            #
 #    KVMD - The main PiKVM daemon.                                           #
 #                                                                            #
-#    Copyright (C) 2018-2023  Maxim Devaev <mdevaev@gmail.com>               #
+#    Copyright (C) 2018-2024  Maxim Devaev <mdevaev@gmail.com>               #
 #                                                                            #
 #    This program is free software: you can redistribute it and/or modify    #
 #    it under the terms of the GNU General Public License as published by    #
@@ -382,9 +382,10 @@ def _get_config_scheme() -> dict:
                 "meta":   Option("/etc/kvmd/meta.yaml",    type=valid_abs_file),
                 "extras": Option("/usr/share/kvmd/extras", type=valid_abs_dir),
                 "hw": {
+                    "platform":      Option("/usr/share/kvmd/platform", type=valid_abs_file, unpack_as="platform_path"),
                     "vcgencmd_cmd":  Option(["/usr/bin/vcgencmd"], type=valid_command),
                     "ignore_past":   Option(False, type=valid_bool),
-                    "state_poll":    Option(10.0,  type=valid_float_f01),
+                    "state_poll":    Option(5.0,   type=valid_float_f01),
                 },
                 "fan": {
                     "daemon":     Option("kvmd-fan", type=valid_stripped_string),
@@ -470,6 +471,7 @@ def _get_config_scheme() -> dict:
 
                 "unix":    Option("/run/kvmd/ustreamer.sock", type=valid_abs_path, unpack_as="unix_path"),
                 "timeout": Option(2.0, type=valid_float_f01),
+                "snapshot_timeout": Option(1.0, type=valid_float_f01),  # error_delay * 3 + 1
 
                 "process_name_prefix": Option("kvmd/streamer"),
 
@@ -656,7 +658,7 @@ def _get_config_scheme() -> dict:
 
         "ipmi": {
             "server": {
-                "host":    Option("::", type=valid_ip_or_host),
+                "host":    Option("",   type=valid_ip_or_host, if_empty=""),
                 "port":    Option(623,  type=valid_port),
                 "timeout": Option(10.0, type=valid_float_f01),
             },
@@ -684,7 +686,7 @@ def _get_config_scheme() -> dict:
             "keymap":       Option("/usr/share/kvmd/keymaps/en-us", type=valid_abs_file),
 
             "server": {
-                "host":        Option("::", type=valid_ip_or_host),
+                "host":        Option("",   type=valid_ip_or_host, if_empty=""),
                 "port":        Option(5900, type=valid_port),
                 "max_clients": Option(10,   type=valid_int_f1),
 
@@ -739,6 +741,16 @@ def _get_config_scheme() -> dict:
                 "vencrypt": {
                     "enabled": Option(True, type=valid_bool, unpack_as="vencrypt_enabled"),
                 },
+            },
+        },
+
+        "nginx": {
+            "http": {
+                "port": Option(80, type=valid_port),
+            },
+            "https": {
+                "enabled": Option(True, type=valid_bool),
+                "port":    Option(443,  type=valid_port),
             },
         },
 

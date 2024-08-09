@@ -2,7 +2,7 @@
 #                                                                            #
 #    KVMD - The main PiKVM daemon.                                           #
 #                                                                            #
-#    Copyright (C) 2018-2023  Maxim Devaev <mdevaev@gmail.com>               #
+#    Copyright (C) 2018-2024  Maxim Devaev <mdevaev@gmail.com>               #
 #                                                                            #
 #    This program is free software: you can redistribute it and/or modify    #
 #    it under the terms of the GNU General Public License as published by    #
@@ -27,6 +27,8 @@ from typing import Callable
 from typing import AsyncGenerator
 from typing import TypeVar
 
+import psutil
+
 from ....logging import get_logger
 
 from .... import env
@@ -45,11 +47,13 @@ _RetvalT = TypeVar("_RetvalT")
 class HwInfoSubmanager(BaseInfoSubmanager):
     def __init__(
         self,
+        platform_path: str,
         vcgencmd_cmd: list[str],
         ignore_past: bool,
         state_poll: float,
     ) -> None:
 
+        self.__platform_path = platform_path
         self.__vcgencmd_cmd = vcgencmd_cmd
         self.__ignore_past = ignore_past
         self.__state_poll = state_poll
@@ -57,22 +61,38 @@ class HwInfoSubmanager(BaseInfoSubmanager):
         self.__dt_cache: dict[str, str] = {}
 
     async def get_state(self) -> dict:
-        (model, serial, cpu_temp, throttling) = await asyncio.gather(
+        (
+            base,
+            serial,
+            platform,
+            throttling,
+            cpu_percent,
+            cpu_temp,
+            mem,
+        ) = await asyncio.gather(
             self.__read_dt_file("model"),
             self.__read_dt_file("serial-number"),
-            self.__get_cpu_temp(),
+            self.__read_platform_file(),
             self.__get_throttling(),
+            self.__get_cpu_percent(),
+            self.__get_cpu_temp(),
+            self.__get_mem(),
         )
         return {
             "platform": {
                 "type": "rpi",
-                "base": model,
+                "base": base,
                 "serial": serial,
+                **platform,  # type: ignore
             },
             "health": {
                 "temp": {
                     "cpu": cpu_temp,
                 },
+                "cpu": {
+                    "percent": cpu_percent,
+                },
+                "mem": mem,
                 "throttling": throttling,
             },
         }
@@ -98,6 +118,24 @@ class HwInfoSubmanager(BaseInfoSubmanager):
                 return None
         return self.__dt_cache[name]
 
+    async def __read_platform_file(self) -> dict:
+        try:
+            text = await aiotools.read_file(self.__platform_path)
+            parsed: dict[str, str] = {}
+            for row in text.split("\n"):
+                row = row.strip()
+                if row:
+                    (key, value) = row.split("=", 1)
+                    parsed[key.strip()] = value.strip()
+            return {
+                "model": parsed["PIKVM_MODEL"],
+                "video": parsed["PIKVM_VIDEO"],
+                "board": parsed["PIKVM_BOARD"],
+            }
+        except Exception:
+            get_logger(0).exception("Can't read device model")
+            return {"model": None, "video": None, "board": None}
+
     async def __get_cpu_temp(self) -> (float | None):
         temp_path = f"{env.SYSFS_PREFIX}/sys/class/thermal/thermal_zone0/temp"
         try:
@@ -105,6 +143,41 @@ class HwInfoSubmanager(BaseInfoSubmanager):
         except Exception as err:
             get_logger(0).error("Can't read CPU temp from %s: %s", temp_path, err)
             return None
+
+    async def __get_cpu_percent(self) -> (float | None):
+        try:
+            st = psutil.cpu_times_percent()
+            user = st.user - st.guest
+            nice = st.nice - st.guest_nice
+            idle_all = st.idle + st.iowait
+            system_all = st.system + st.irq + st.softirq
+            virtual = st.guest + st.guest_nice
+            total = max(1, user + nice + system_all + idle_all + st.steal + virtual)
+            return int(
+                st.nice / total * 100
+                + st.user / total * 100
+                + system_all / total * 100
+                + (st.steal + st.guest) / total * 100
+            )
+        except Exception as err:
+            get_logger(0).error("Can't get CPU percent: %s", err)
+            return None
+
+    async def __get_mem(self) -> dict:
+        try:
+            st = psutil.virtual_memory()
+            return {
+                "percent": st.percent,
+                "total": st.total,
+                "available": st.available,
+            }
+        except Exception as err:
+            get_logger(0).error("Can't get memory info: %s", err)
+            return {
+                "percent": None,
+                "total": None,
+                "available": None,
+            }
 
     async def __get_throttling(self) -> (dict | None):
         # https://www.raspberrypi.org/forums/viewtopic.php?f=63&t=147781&start=50#p972790

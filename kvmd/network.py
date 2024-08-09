@@ -2,7 +2,7 @@
 #                                                                            #
 #    KVMD - The main PiKVM daemon.                                           #
 #                                                                            #
-#    Copyright (C) 2018-2023  Maxim Devaev <mdevaev@gmail.com>               #
+#    Copyright (C) 2018-2024  Maxim Devaev <mdevaev@gmail.com>               #
 #                                                                            #
 #    This program is free software: you can redistribute it and/or modify    #
 #    it under the terms of the GNU General Public License as published by    #
@@ -20,33 +20,29 @@
 # ========================================================================== #
 
 
-import multiprocessing
-import time
-
-from typing import Literal
-
-import setproctitle
-
-from kvmd.apps.cleanup import main
+import socket
+import errno
 
 
 # =====
-def test_ok() -> None:
-    _ = Literal  # Makes liters happy
-    queue: "multiprocessing.Queue[Literal[True]]" = multiprocessing.Queue()
+def is_ipv6_enabled() -> bool:
+    if not socket.has_ipv6:
+        # If the socket library has no support for IPv6,
+        # then the question is moot as we can't use IPv6 anyways.
+        return False
+    try:
+        with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as sock:
+            sock.bind(("::1", 0))
+        return True
+    except OSError as err:
+        if err.errno in [errno.EADDRNOTAVAIL, errno.EAFNOSUPPORT]:
+            return False
+        if err.errno == errno.EADDRINUSE:
+            return True
+        raise
 
-    def ustreamer_fake() -> None:
-        setproctitle.setproctitle("kvmd/streamer: /usr/bin/ustreamer")
-        queue.put(True)
-        while True:
-            time.sleep(1)
 
-    proc = multiprocessing.Process(target=ustreamer_fake, daemon=True)
-    proc.start()
-    assert queue.get(timeout=5)
-
-    assert proc.is_alive()
-    main(["kvmd-cleanup", "--run"])
-
-    assert not proc.is_alive()
-    proc.join()
+def get_listen_host(host: str) -> str:
+    if len(host) == 0:
+        return ("::" if is_ipv6_enabled() else "0.0.0.0")
+    return host

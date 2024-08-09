@@ -2,7 +2,7 @@
 #                                                                            #
 #    KVMD - The main PiKVM daemon.                                           #
 #                                                                            #
-#    Copyright (C) 2018-2023  Maxim Devaev <mdevaev@gmail.com>               #
+#    Copyright (C) 2018-2024  Maxim Devaev <mdevaev@gmail.com>               #
 #                                                                            #
 #    This program is free software: you can redistribute it and/or modify    #
 #    it under the terms of the GNU General Public License as published by    #
@@ -150,7 +150,10 @@ export function Gpio(__recorder) {
 			if (item.scheme.pulse.delay) {
 				controls.push(`
 					<td><button disabled id="gpio-button-${item.channel}" class="gpio-button"
-					data-channel="${item.channel}" data-confirm="${confirm}">${item.text}</button></td>
+					${item.hide ? "data-force-hide-menu" : ""}
+					data-channel="${item.channel}" data-confirm="${confirm}">
+					${(item.hide ? "&bull; " : "") + item.text}
+					</button></td>
 				`);
 			}
 			return `<table><tr>${controls.join("<td>&nbsp;&nbsp;&nbsp;</td>")}</tr></table>`;
@@ -209,13 +212,11 @@ export function Gpio(__recorder) {
 	};
 
 	var __sendPost = function(url) {
-		let http = tools.makeRequest("POST", url, function() {
-			if (http.readyState === 4) {
-				if (http.status === 409) {
-					wm.error("Performing another operation for this GPIO channel.<br>Please try again later");
-				} else if (http.status !== 200) {
-					wm.error("GPIO error:<br>", http.responseText);
-				}
+		tools.httpPost(url, function(http) {
+			if (http.status === 409) {
+				wm.error("Performing another operation for this GPIO channel.<br>Please try again later");
+			} else if (http.status !== 200) {
+				wm.error("GPIO error:<br>", http.responseText);
 			}
 		});
 	};
