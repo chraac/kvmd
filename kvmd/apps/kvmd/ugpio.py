@@ -310,7 +310,8 @@ class UserGpio:
 
     async def sysprep(self) -> None:
         get_logger(0).info("Preparing User-GPIO drivers ...")
-        for (_, driver) in tools.sorted_kvs(self.__drivers):
+        for (key, driver) in tools.sorted_kvs(self.__drivers):
+            get_logger(0).info(f"Preparing User-GPIO driver: {key}")
             await driver.prepare()
 
     async def systask(self) -> None:
