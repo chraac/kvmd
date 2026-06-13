@@ -22,6 +22,7 @@
 
 import struct
 import dataclasses
+from typing import Optional
 
 from .types import Edid
 from .types import Colors
@@ -130,7 +131,7 @@ class UnitState(Unpackable):  # pylint: disable=too-many-instance-attributes
 
     __struct = struct.Struct("<HHHBBHHHHHHBBBHHHHBxBBB28x")
 
-    def compare_edid(self, ch: int, edid: ("Edid" | None)) -> bool:
+    def compare_edid(self, ch: int, edid: Optional["Edid"]) -> bool:
         if edid is None:
             # Сойдет любой невалидный EDID
             return (not self.video_edid[ch])
@@ -325,7 +326,7 @@ class Response:
     body:   Unpackable
 
     @classmethod
-    def unpack(cls, msg: bytes) -> ("Response" | None):
+    def unpack(cls, msg: bytes) -> Optional["Response"]:
         header = Header.unpack(msg)
         match header.op:
             case Header.NAK:
